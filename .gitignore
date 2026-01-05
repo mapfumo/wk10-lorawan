@@ -1,0 +1,54 @@
+# Rust/Cargo
+**/target/
+**/*.rs.bk
+**/*.pdb
+**/Cargo.lock
+
+# Embedded/probe-rs
+**/.cargo/
+*.bin
+*.elf
+*.hex
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# ChirpStack/Docker
+docker-compose.override.yml
+*.env.local
+
+# InfluxDB
+influxdb-data/
+
+# Grafana
+grafana-data/
+*.db
+
+# MQTT
+mosquitto-data/
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
