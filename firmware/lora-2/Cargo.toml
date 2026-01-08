@@ -1,5 +1,5 @@
 [package]
-name = "node1-bme688"
+name = "lora-2"
 version = "0.1.0"
 edition = "2021"
 
@@ -29,12 +29,12 @@ defmt-rtt = "0.4"
 
 # Display driver
 sh1106 = "0.5"  # OLED display driver (SH1106 128x64)
-embedded-graphics = "0.8"  # Graphics primitives for drawing text
+embedded-graphics = "0.8"  # Graphics primitives
 heapless = "0.8"  # No-std string formatting
 
-# Sensor drivers
-sht4x = "0.2"  # SHT41 temperature + humidity sensor
-embedded-hal = "1.0"  # Hardware abstraction layer traits
+# Sensor drivers (to be added when implementing BME688)
+# bme680 = "0.6"  # BME688 sensor driver
+# embedded-hal = "1.0"  # Hardware abstraction layer traits
 
 # LoRaWAN stack (to be determined - options: lora-phy, embassy-lora)
 # Will likely need direct SubGHz peripheral access via PAC

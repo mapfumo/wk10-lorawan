@@ -339,5 +339,138 @@ If connection fails with JtagGetIdcodeError:
 
 ---
 
-**Last Updated**: 2026-01-05
+## 2026-01-08: NODE_1 SHT41 + OLED Integration Success! ✅
+
+### Real Temperature & Humidity Sensor Data on OLED Display
+
+**Objective**: Get SHT41 sensor working with OLED display on NODE_1
+
+**Hardware**: NODE_1 (0483:374e:003E00463234510A33353533)
+- SHT41 temperature & humidity sensor
+- SH1106 OLED display 128x64 (I2C)
+- Connected via breadboard (bypassing STEMMA QT cables)
+
+**Final Working Configuration**:
+
+**I2C2 Bus** (PA12=SCL, PA11=SDA):
+- SHT41 sensor: 0x44
+- SH1106 OLED: 0x3C
+
+**Results**:
+- ✅ Both devices detected on I2C bus
+- ✅ SHT41 reading real sensor data: 27°C, 60% RH
+- ✅ OLED displaying sensor readings every 2 seconds
+- ✅ LED heartbeat on PB15
+- ✅ Integer-only math (no floating point)
+
+**Display Output**:
+```
+STM32WL55 Node1
+Temp: 27 C
+Hum:  60 %
+SHT41 Active
+```
+
+**Technical Implementation**:
+
+1. **I2C Bus Sharing Solution**:
+   - Challenge: sh1106 driver consumes I2C bus (no release mechanism)
+   - Solution: Use `unsafe` peripheral stealing to recreate I2C each loop iteration
+   - Pattern: Read sensor → Create display → Drop both → Repeat
+
+2. **SHT41 Wake-up Requirement** (CRITICAL DISCOVERY):
+   - Problem: SHT41 not detected on initial I2C bus scan
+   - Solution: Send measurement command (0xFD) BEFORE scanning
+   - SHT41 requires an initial command to wake up and respond to I2C
+   - After wake-up command, sensor appears at 0x44
+
+3. **Integer Math Implementation** (No FPU on STM32WL55):
+   - Temperature: `T = -45 + (175 × raw) / 65535` (°C)
+   - Humidity: `RH = -6 + (125 × raw) / 65535` (%RH)
+   - Uses i32 intermediate values, casts to i16 for display
+   - Avoids floating point operations completely
+
+4. **Code Structure**:
+   ```rust
+   loop {
+       // Step 1: Create I2C and read SHT41
+       let mut i2c = unsafe { I2c::new(I2C2::steal(), PA12::steal(), PA11::steal(), ...) };
+       i2c.blocking_write(SHT41_ADDR, &[CMD_MEASURE_HIGH_PRECISION])?;
+       Timer::after_millis(10).await;  // Wait for measurement
+       i2c.blocking_read(SHT41_ADDR, &mut data)?;
+       // Convert raw to temperature/humidity (integer math)
+
+       // Step 2: Create OLED display with same I2C
+       let mut display = Builder::new().connect_i2c(i2c).into();
+       display.init()?;
+       // Draw text with sensor readings
+       display.flush()?;
+
+       // Both i2c and display dropped here, hardware released
+       Timer::after_secs(2).await;
+   }
+   ```
+
+**Key Learnings**:
+
+1. **SHT41 Wake-up Behavior**:
+   - Sensor does NOT respond to simple I2C address probes when idle
+   - Must send a measurement command first to "wake" the sensor
+   - After wake-up, sensor responds normally to I2C bus scans
+   - This is normal behavior per SHT41 datasheet (low power design)
+
+2. **STM32WL55 No FPU**:
+   - Cannot use f32/f64 without soft-float library
+   - HardFault occurs when trying to format floats
+   - Integer math is fast, efficient, and sufficient for display
+   - Can show decimal precision by using fixed-point (temp × 10)
+
+3. **Embassy I2C Peripheral Stealing**:
+   - Using `steal()` allows recreating peripherals each iteration
+   - Safe in this context: single-threaded, exclusive access per iteration
+   - Avoids complex lifetime management with display drivers
+   - Hardware naturally released when objects drop
+
+4. **SH1106 vs SSD1306**:
+   - User has SH1106 OLED (not SSD1306 as originally documented)
+   - Different driver needed: `sh1106` crate (not `ssd1306`)
+   - Similar API but different initialization sequence
+   - Both work on same I2C address (0x3C)
+
+**Troubleshooting Journey**:
+
+1. **Initial Problem**: SHT41 not detected (only OLED at 0x3C found)
+2. **Attempted Solution**: Full I2C bus scan (0x00-0x7F)
+3. **Discovery**: User confirmed "sht41 address is 0x44"
+4. **Breakthrough**: Send wake-up command BEFORE scanning
+5. **Success**: Both devices detected and working!
+
+**Firmware Dependencies**:
+```toml
+embassy-stm32 = "0.1.0"
+embassy-time = "0.3"
+sh1106 = "0.5"              # OLED display driver
+embedded-graphics = "0.8"   # Graphics primitives
+heapless = "0.8"           # No-std string formatting
+sht4x = "0.2"              # SHT41 sensor (for reference, manual impl used)
+```
+
+**Next Steps for NODE_1**:
+1. ✅ Hardware working with real sensor data
+2. ✅ OLED displaying readings
+3. [ ] Add LoRaWAN radio stack (SubGHz peripheral)
+4. [ ] Implement OTAA join procedure
+5. [ ] Transmit sensor data via LoRaWAN uplink
+6. [ ] Connect to ChirpStack network server
+
+**Next Steps for NODE_2 (BME688)**:
+1. [ ] Test LED blink on NODE_2
+2. [ ] Implement BME688 I2C driver
+3. [ ] Add OLED display (same pattern as NODE_1)
+4. [ ] Display BME688 environmental data
+5. [ ] Clone LoRaWAN stack from NODE_1
+
+---
+
+**Last Updated**: 2026-01-08
 **Next Review**: End of Week 10

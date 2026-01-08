@@ -19,7 +19,7 @@ use embedded_graphics::{
     prelude::*,
     text::Text,
 };
-use sh1106::{prelude::*, Builder};
+use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct I2c2Irqs {
@@ -33,8 +33,8 @@ const CMD_MEASURE_HIGH_PRECISION: u8 = 0xFD;
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("====================================");
-    info!("  STM32WL55 - I2C2 OLED + SHT41");
-    info!("  Node 1 - Temperature & Humidity");
+    info!("  STM32WL55 LoRa-1 - SHT41");
+    info!("  Temperature & Humidity Sensor");
     info!("====================================");
 
     let config = Config::default();
@@ -151,35 +151,24 @@ async fn main(_spawner: Spawner) {
         }
 
         // ============================================
-        // Step 2: Update OLED display
+        // Step 2: Update OLED display (SSD1306 128x32)
         // ============================================
-        let mut display: GraphicsMode<_> = Builder::new()
-            .with_size(DisplaySize::Display128x64)
-            .connect_i2c(i2c)
-            .into();
+        let interface = I2CDisplayInterface::new(i2c);
+        let mut display = Ssd1306::new(interface, DisplaySize128x32, DisplayRotation::Rotate0)
+            .into_buffered_graphics_mode();
 
         if display.init().is_ok() {
             // Clear display
-            display.clear();
+            let _ = display.clear(BinaryColor::Off);
 
-            // Title
-            let _ = Text::new("STM32WL55 Node1", Point::new(5, 10), text_style)
+            // Title - adjusted for 32 pixel height
+            let _ = Text::new("LoRa-1", Point::new(5, 6), text_style)
                 .draw(&mut display);
 
-            // Temperature
-            let mut temp_buf = heapless::String::<32>::new();
-            let _ = core::fmt::write(&mut temp_buf, format_args!("Temp: {} C", temp_int));
-            let _ = Text::new(&temp_buf, Point::new(5, 28), text_style)
-                .draw(&mut display);
-
-            // Humidity
-            let mut hum_buf = heapless::String::<32>::new();
-            let _ = core::fmt::write(&mut hum_buf, format_args!("Hum:  {} %", hum_int));
-            let _ = Text::new(&hum_buf, Point::new(5, 43), text_style)
-                .draw(&mut display);
-
-            // Status
-            let _ = Text::new("SHT41 Active", Point::new(20, 58), text_style)
+            // Temperature and Humidity on same line (space constrained)
+            let mut data_buf = heapless::String::<32>::new();
+            let _ = core::fmt::write(&mut data_buf, format_args!("{}C {}%", temp_int, hum_int));
+            let _ = Text::new(&data_buf, Point::new(5, 20), text_style)
                 .draw(&mut display);
 
             // Flush to display

@@ -1,0 +1,58 @@
+[package]
+name = "lora-1"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Embassy async framework - updated to match working solution
+embassy-executor = { version = "0.7.0", features = ["arch-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { version = "0.4.0", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-stm32 = { version = "0.2.0", features = [
+    "defmt",
+    "stm32wle5jc",      # STM32WL55JC (wle5jc is the feature name in 0.2.0)
+    "time-driver-any",
+    "memory-x",
+    "unstable-pac",
+    "exti",
+    "chrono",
+] }
+embassy-sync = { version = "0.6", features = ["defmt"] }
+embassy-futures = { version = "0", features = ["defmt"] }
+
+# Cortex-M runtime
+cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.3"
+
+# Panic handler
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+# Logging
+defmt = "0.3"
+defmt-rtt = "0.4"
+
+# Display driver
+ssd1306 = "0.8"  # OLED display driver (SSD1306 128x32)
+embedded-graphics = "0.8"  # Graphics primitives for drawing text
+heapless = "0.8"  # No-std string formatting
+
+# Sensor drivers
+sht4x = "0.2"  # SHT41 temperature + humidity sensor
+embedded-hal = "1.0"  # Hardware abstraction layer traits
+embedded-hal-async = "1.0.0"  # Async HAL traits for lora-phy
+
+# LoRaWAN stack - using patched versions for embassy-time 0.4.0 compatibility
+lora-phy = { path = "/home/tony/dev/lora-phy-patched", features = ["lorawan-radio"] }
+lorawan-device = { path = "/home/tony/dev/lorawan-device-patched", features = ["embassy-time", "default-crypto"] }
+
+# Patch lora-phy to use our patched lorawan-device
+[patch.crates-io]
+lorawan-device = { path = "/home/tony/dev/lorawan-device-patched" }
+
+[profile.release]
+debug = 2  # Full debug symbols for probe-rs
+lto = "fat"
+opt-level = "z"  # Optimize for size
+
+[profile.dev]
+debug = 2
+opt-level = 1

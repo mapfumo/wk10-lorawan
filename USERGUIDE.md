@@ -221,14 +221,14 @@ Repeat Step 2 with:
 
 Edit firmware source files with DevEUI, AppEUI, AppKey from ChirpStack:
 
-**Node 1 (node1-bme688/src/main.rs)**:
+**Node 1 (lora-1/src/main.rs)**:
 ```rust
 const DEV_EUI: [u8; 8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x01];
 const APP_EUI: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 const APP_KEY: [u8; 16] = [/* from ChirpStack */];
 ```
 
-**Node 2 (node2-sht41/src/main.rs)**:
+**Node 2 (lora-2/src/main.rs)**:
 ```rust
 const DEV_EUI: [u8; 8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x02];
 const APP_EUI: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -524,7 +524,7 @@ sudo systemctl status lorawan-bridge
 2. Update DevEUI/AppEUI/AppKey if needed
 3. Build firmware:
    ```bash
-   cd firmware/node1-bme688
+   cd firmware/lora-1
    cargo build --release
    ```
 4. Flash device:

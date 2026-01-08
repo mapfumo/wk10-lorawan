@@ -15,8 +15,8 @@ const APP_KEY: [u8; 16] = [0x00; 16]; // TODO: Update from ChirpStack
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("====================================");
-    info!("  Node 2 - SHT41 LoRaWAN Sensor");
-    info!("  STM32WL55JC1 - Week 10");
+    info!("  STM32WL55 LoRa-2 - BME688");
+    info!("  Environmental Sensor (planned)");
     info!("====================================");
 
     // Initialize STM32WL55 with default config

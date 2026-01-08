@@ -74,9 +74,76 @@ STM32WL55JC1                BME688                  SSD1306 OLED
 
 ---
 
-## Node 2: STM32WL55 + SHT41 + OLED
+## Node 1: STM32WL55 + SHT41 + OLED (UPDATED: 2026-01-08)
+
+**Status**: ✅ Working - Sensor data displaying on OLED
+
+**Note**: NODE_1 was originally planned for BME688, but is currently configured with SHT41 for testing.
+
+### Actual Wiring Configuration
+
+**Board**: NUCLEO-WL55JC1 (Serial: 003E00463234510A33353533)
+
+**I2C Bus**: I2C2 (PA12=SCL, PA11=SDA) at 100 kHz
+
+**Connection Method**: Breadboard (STEMMA QT cables bypassed)
 
 ### SHT41 High-Precision Sensor (I2C)
+
+| SHT41 Pin | STM32WL55 Pin | Function | Notes |
+|-----------|---------------|----------|-------|
+| VCC | 3.3V | Power | 2.4V - 3.6V operating range |
+| GND | GND | Ground | Common ground |
+| SDA | PA11 | I2C2 Data | Shared with OLED |
+| SCL | PA12 | I2C2 Clock | Shared with OLED |
+
+**I2C Address**: 0x44 (default, fixed)
+
+**Important**: SHT41 requires wake-up command (0xFD) before responding to I2C bus scans
+
+### SH1106 OLED Display (I2C)
+
+| OLED Pin | STM32WL55 Pin | Function | Notes |
+|----------|---------------|----------|-------|
+| VCC | 3.3V | Power | Use 3.3V rail |
+| GND | GND | Ground | Common ground |
+| SDA | PA11 | I2C2 Data | Shared with SHT41 |
+| SCL | PA12 | I2C2 Clock | Shared with SHT41 |
+
+**I2C Address**: 0x3C (fixed)
+
+**Display**: SH1106 128x64 (not SSD1306)
+
+### Working Configuration Diagram (Node 1 - Current)
+
+```
+STM32WL55JC1                SHT41                   SH1106 OLED
+┌─────────────┐            ┌────────┐              ┌──────────┐
+│             │            │        │              │          │
+│ 3.3V ───────┼────────────┤ VCC   │──────────────┤ VCC      │
+│ GND  ───────┼────────────┤ GND   │──────────────┤ GND      │
+│             │            │        │              │          │
+│ PA11 (SDA)──┼────────────┤ SDA   │──────────────┤ SDA      │
+│ PA12 (SCL)──┼────────────┤ SCL   │──────────────┤ SCL      │
+│             │            │        │              │          │
+│ PB15 (LED)──┼──LED       └────────┘              └──────────┘
+└─────────────┘
+         I2C2 Bus (Shared):
+         - SHT41: 0x44
+         - SH1106 OLED: 0x3C
+
+         Current Readings:
+         Temp: 27°C
+         Humidity: 60% RH
+```
+
+---
+
+## Node 2: STM32WL55 + BME688 + OLED (PLANNED)
+
+**Status**: ⏳ Pending - To be configured next
+
+### SHT41 High-Precision Sensor (I2C) - REFERENCE
 
 | SHT41 Pin | STM32WL55 Pin | Function | Notes |
 |-----------|---------------|----------|-------|

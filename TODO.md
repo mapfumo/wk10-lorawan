@@ -29,17 +29,19 @@
 - [ ] Document ChirpStack installation in docs/chirpstack-setup.md
 
 ## Day 2: STM32WL55 Development Environment & Sensor Integration
-- [ ] Unbox and inventory 2x NUCLEO-WL55JC1 boards
-- [ ] Set up STM32WL55 development environment
-  - [ ] Install probe-rs support for STM32WL55JC
-  - [ ] Test probe connection and chip detection
-  - [ ] Set up .cargo/config.toml for WL55
-  - [ ] Configure memory.x for STM32WL55JC (256KB Flash, 64KB RAM)
-- [ ] **Board 1**: Wire BME688 (I2C 0x76/0x77) + OLED (I2C 0x3C)
-- [ ] **Board 2**: Wire SHT41 (I2C 0x44) + OLED (I2C 0x3C)
-- [ ] Test sensor communication on both boards
-- [ ] Display sensor readings on both OLEDs
-- [ ] Document hardware wiring in docs/hardware-wiring.md
+- [x] Unbox and inventory 2x NUCLEO-WL55JC1 boards
+- [x] Set up STM32WL55 development environment
+  - [x] Install probe-rs support for STM32WL55JC
+  - [x] Test probe connection and chip detection
+  - [x] Set up .cargo/config.toml for WL55
+  - [x] Configure memory.x for STM32WL55JC (256KB Flash, 64KB RAM)
+- [x] **Board 1 (NODE_1)**: Wire SHT41 (I2C 0x44) + SH1106 OLED (I2C 0x3C) via breadboard
+- [ ] **Board 2 (NODE_2)**: Wire BME688 (I2C 0x76/0x77) + OLED (I2C 0x3C)
+- [x] Test sensor communication on NODE_1 (SHT41 working at 27°C, 60% RH)
+- [x] Display sensor readings on NODE_1 OLED (real-time updates every 2s)
+- [x] Document hardware wiring in docs/hardware-wiring.md
+
+**Note**: NODE_1 configured with SHT41 (not BME688 as originally planned) for initial testing
 
 ## Day 3: LoRaWAN OTAA Implementation (Board 1 - BME688)
 - [ ] Study STM32WL LoRaWAN examples and HAL
@@ -95,7 +97,7 @@
 
 ## Implementation: STM32WL55 LoRaWAN Stack
 
-### Node 1 (BME688) - firmware/node1-bme688/
+### Node 1 (BME688) - firmware/lora-1/
 - [ ] Create Cargo project for STM32WL55JC
 - [ ] Add dependencies (embassy-stm32, lorawan stack)
 - [ ] Initialize STM32WL SubGHz radio peripheral
@@ -106,7 +108,7 @@
 - [ ] Add error handling and retry logic
 - [ ] Test indoor range (target: 50m minimum)
 
-### Node 2 (SHT41) - firmware/node2-sht41/
+### Node 2 (SHT41) - firmware/lora-2/
 - [ ] Clone Node 1 firmware structure
 - [ ] Replace BME688 with SHT41 sensor driver
 - [ ] Update DevEUI (unique identifier)
