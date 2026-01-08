@@ -198,19 +198,35 @@ display.init()?;
 ### Gateway Credentials (Application "TOT")
 See `LORAWAN_CREDENTIALS.md` for complete reference.
 
+**CRITICAL: LoRaWAN Byte Order Shenanigans! 🎭**
+
+LoRaWAN transmits EUIs in **little-endian** (LSB first) over-the-air, but displays them in **big-endian** (MSB first) in dashboards/configs. When defining credentials in firmware:
+
+- **DevEUI & AppEUI**: Must be REVERSED (little-endian) for `lorawan-device` crate
+- **AppKey**: Stays in big-endian (MSB first)
+
+**Example: Gateway shows DevEUI as `23ce1bfeff091fac`**
+- ❌ Wrong: `[0x23, 0xCE, 0x1B, 0xFE, 0xFF, 0x09, 0x1F, 0xAC]` (will be parsed as gateway EUI!)
+- ✅ Correct: `[0xAC, 0x1F, 0x09, 0xFF, 0xFE, 0x1B, 0xCE, 0x23]` (reversed bytes)
+
 **Quick Copy-Paste for Firmware:**
 ```rust
 // LoRa-1 (pre-registered as "STM_Nodes")
-const DEV_EUI: [u8; 8] = [0x23, 0xCE, 0x1B, 0xFE, 0xFF, 0x09, 0x1F, 0xAC];
-const APP_EUI: [u8; 8] = [0xB1, 0x30, 0xA8, 0x64, 0xC5, 0x29, 0x53, 0x56];
+// Gateway shows: DevEUI=23ce1bfeff091fac, AppEUI=b130a864c5295356
+const DEV_EUI: [u8; 8] = [0xAC, 0x1F, 0x09, 0xFF, 0xFE, 0x1B, 0xCE, 0x23]; // REVERSED
+const APP_EUI: [u8; 8] = [0x56, 0x53, 0x29, 0xC5, 0x64, 0xA8, 0x30, 0xB1]; // REVERSED
 const APP_KEY: [u8; 16] = [
     0xB7, 0x26, 0x73, 0x9B, 0x78, 0xEC, 0x4B, 0x9E,
-    0x92, 0x34, 0xE5, 0xD3, 0x5E, 0xA9, 0x68, 0x1B
-];
+    0x92, 0x34, 0xE5, 0xD3, 0x5E, 0xA9, 0x68, 0x1B,
+]; // NOT reversed (stays MSB first)
 
 // LoRa-2 (suggested DevEUI for when adding)
-const DEV_EUI: [u8; 8] = [0xAC, 0x1F, 0x09, 0xFF, 0xFE, 0x1B, 0xCE, 0x24];
+// Gateway will show: DevEUI=24ce1bfeff091fac (example)
+const DEV_EUI: [u8; 8] = [0xAC, 0x1F, 0x09, 0xFF, 0xFE, 0x1B, 0xCE, 0x24]; // REVERSED
 ```
+
+**Why This Matters:**
+If you get byte order wrong, the gateway will parse your DevEUI as the gateway's own EUI and reject the join request with `nsParseJoinReq: unknow mote` error.
 
 ### AU915 Sub-band 2 Configuration
 ```rust

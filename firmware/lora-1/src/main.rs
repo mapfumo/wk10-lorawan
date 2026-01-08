@@ -1,18 +1,23 @@
 #![no_std]
 #![no_main]
 
+// LoRaWAN interface variant module for RF switch control
+mod iv;
+
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
-    dma::NoDma,
-    gpio::{Level, Output, Speed},
+    gpio::{Level, Output, Pin, Speed},
     i2c::{Config as I2cConfig, EventInterruptHandler, ErrorInterruptHandler, I2c},
     peripherals::{self, I2C2, PA11, PA12},
+    rcc::*,
+    rng::{self, Rng},
+    spi::Spi,
     time::Hertz,
     Config,
 };
-use embassy_time::Timer;
+use embassy_time::{Delay, Timer};
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyle},
     pixelcolor::BinaryColor,
@@ -22,25 +27,71 @@ use embedded_graphics::{
 use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
 use {defmt_rtt as _, panic_probe as _};
 
+// LoRaWAN imports (not used yet, but prepared)
+use lora_phy::lorawan_radio::LorawanRadio;
+use lora_phy::sx126x::{self, Stm32wl, Sx126x, TcxoCtrlVoltage};
+use lora_phy::LoRa;
+use lorawan_device::async_device::{region, Device, EmbassyTimer, JoinMode, JoinResponse};
+use lorawan_device::default_crypto::DefaultFactory;
+use lorawan_device::region::{Subband, AU915};
+use lorawan_device::{AppEui, AppKey, DevEui};
+
+use self::iv::{InterruptHandler, Stm32wlInterfaceVariant, SubghzSpiDevice};
+
 bind_interrupts!(struct I2c2Irqs {
     I2C2_EV => EventInterruptHandler<peripherals::I2C2>;
     I2C2_ER => ErrorInterruptHandler<peripherals::I2C2>;
 });
 
+bind_interrupts!(struct Irqs{
+    SUBGHZ_RADIO => InterruptHandler;
+    RNG => rng::InterruptHandler<peripherals::RNG>;
+});
+
+// SHT41 sensor constants
 const SHT41_ADDR: u8 = 0x44;
 const CMD_MEASURE_HIGH_PRECISION: u8 = 0xFD;
+
+// LoRaWAN configuration constants
+const MAX_TX_POWER: u8 = 14; // AU915 max TX power
+
+// LoRaWAN credentials (from gateway TOT application)
+// Note: EUIs are stored in LITTLE-ENDIAN for over-the-air transmission
+const DEV_EUI: [u8; 8] = [0xAC, 0x1F, 0x09, 0xFF, 0xFE, 0x1B, 0xCE, 0x23]; // 23ce1bfeff091fac reversed
+const APP_EUI: [u8; 8] = [0x56, 0x53, 0x29, 0xC5, 0x64, 0xA8, 0x30, 0xB1]; // b130a864c5295356 reversed
+const APP_KEY: [u8; 16] = [
+    0xB7, 0x26, 0x73, 0x9B, 0x78, 0xEC, 0x4B, 0x9E,
+    0x92, 0x34, 0xE5, 0xD3, 0x5E, 0xA9, 0x68, 0x1B,
+]; // AppKey stays in big-endian (MSB first)
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("====================================");
     info!("  STM32WL55 LoRa-1 - SHT41");
-    info!("  Temperature & Humidity Sensor");
+    info!("  Temperature & Humidity Sensor + LoRaWAN");
     info!("====================================");
 
-    let config = Config::default();
+    // Clock configuration matching working solution (HSE + PLL for radio stability)
+    let mut config = Config::default();
+    {
+        config.rcc.hse = Some(Hse {
+            freq: Hertz(32_000_000),
+            mode: HseMode::Bypass,
+            prescaler: HsePrescaler::DIV1,
+        });
+        config.rcc.sys = Sysclk::PLL1_R;
+        config.rcc.pll = Some(Pll {
+            source: PllSource::HSE,
+            prediv: PllPreDiv::DIV2,
+            mul: PllMul::MUL6,
+            divp: None,
+            divq: Some(PllQDiv::DIV2),
+            divr: Some(PllRDiv::DIV2),
+        });
+    }
     let p = embassy_stm32::init(config);
 
-    info!("STM32WL55 initialized");
+    info!("STM32WL55 initialized with HSE + PLL clock");
 
     // Test I2C2 bus and detect devices
     {
@@ -51,13 +102,10 @@ async fn main(_spawner: Spawner) {
 
         // SAFETY: This is the first and only time we're using these peripherals
         let mut i2c = unsafe {
-            I2c::new(
+            I2c::new_blocking(
                 I2C2::steal(),
                 PA12::steal(),
                 PA11::steal(),
-                I2c2Irqs,
-                NoDma,
-                NoDma,
                 Hertz(100_000),
                 i2c_config,
             )
@@ -86,6 +134,133 @@ async fn main(_spawner: Spawner) {
         info!("Total devices found: {}", found_count);
     }
 
+    // ============================================
+    // Initialize LoRaWAN Radio Hardware
+    // ============================================
+    info!("Initializing LoRaWAN radio hardware...");
+
+    // RF switch control pins (NUCLEO-WL55JC1 board)
+    let ctrl1 = Output::new(p.PC4.degrade(), Level::Low, Speed::High);
+    let ctrl2 = Output::new(p.PC5.degrade(), Level::Low, Speed::High);
+    let ctrl3 = Output::new(p.PC3.degrade(), Level::High, Speed::High);
+    info!("✓ RF switch pins configured (PC3, PC4, PC5)");
+
+    // Initialize SubGHz SPI
+    let spi = Spi::new_subghz(p.SUBGHZSPI, p.DMA1_CH1, p.DMA1_CH2);
+    let spi = SubghzSpiDevice(spi);
+    info!("✓ SubGHz SPI initialized");
+
+    // Configure radio
+    let use_high_power_pa = true; // Use high power PA for better range
+    let config = sx126x::Config {
+        chip: Stm32wl { use_high_power_pa },
+        tcxo_ctrl: Some(TcxoCtrlVoltage::Ctrl1V7),
+        use_dcdc: true,
+        rx_boost: false,
+    };
+
+    // Create interface variant with RF switch control
+    let iv = Stm32wlInterfaceVariant::new(
+        Irqs,
+        use_high_power_pa,
+        Some(ctrl1),
+        Some(ctrl2),
+        Some(ctrl3),
+    )
+    .unwrap();
+    info!("✓ RF switch interface variant created");
+
+    // Initialize LoRa radio (this will be used for LoRaWAN later)
+    let lora = LoRa::new(Sx126x::new(spi, iv, config), true, Delay)
+        .await
+        .unwrap();
+    info!("✓ LoRa radio initialized");
+
+    // Convert to LorawanRadio wrapper
+    let radio: LorawanRadio<_, _, MAX_TX_POWER> = lora.into();
+
+    // Configure AU915 region
+    let mut au915 = AU915::new();
+    au915.set_join_bias(Subband::_1); // Sub-band 1 (915.2-916.6 MHz channels 0-7)
+    let region: region::Configuration = au915.into();
+    info!("✓ AU915 region configured (sub-band 1)");
+
+    // Initialize RNG for crypto
+    let rng = Rng::new(p.RNG, Irqs);
+    info!("✓ RNG initialized for crypto");
+
+    // Create LoRaWAN device
+    let mut device: Device<_, DefaultFactory, _, _> =
+        Device::new(region, radio, EmbassyTimer::new(), rng);
+    info!("✓ LoRaWAN device created");
+
+    info!("========================================");
+    info!("  LoRaWAN stack initialized!");
+    info!("  Ready to join network");
+    info!("========================================");
+
+    // ============================================
+    // OTAA Join with Retry Logic
+    // ============================================
+    info!("Starting OTAA join procedure...");
+    info!("DevEUI: {:02X}", DEV_EUI);
+    info!("AppEUI: {:02X}", APP_EUI);
+
+    let join_mode = JoinMode::OTAA {
+        deveui: DevEui::from(DEV_EUI),
+        appeui: AppEui::from(APP_EUI),
+        appkey: AppKey::from(APP_KEY),
+    };
+
+    let mut join_attempt = 1;
+    const MAX_JOIN_ATTEMPTS: u8 = 5;
+
+    loop {
+        info!("OTAA join attempt {}/{}", join_attempt, MAX_JOIN_ATTEMPTS);
+
+        match device.join(&join_mode).await {
+            Ok(JoinResponse::JoinSuccess) => {
+                info!("✓ LoRaWAN network joined successfully!");
+                break;
+            }
+            Ok(JoinResponse::NoJoinAccept) => {
+                error!("✗ Join failed (attempt {}): No join accept received", join_attempt);
+
+                if join_attempt >= MAX_JOIN_ATTEMPTS {
+                    error!("Maximum join attempts reached. Stopping.");
+                    loop {
+                        // Infinite loop - device cannot proceed without network connection
+                        Timer::after_secs(60).await;
+                    }
+                }
+
+                join_attempt += 1;
+                info!("Waiting 10 seconds before retry...");
+                Timer::after_secs(10).await;
+            }
+            Err(err) => {
+                error!("✗ Join error (attempt {}): {:?}", join_attempt, err);
+
+                if join_attempt >= MAX_JOIN_ATTEMPTS {
+                    error!("Maximum join attempts reached. Stopping.");
+                    loop {
+                        // Infinite loop - device cannot proceed without network connection
+                        Timer::after_secs(60).await;
+                    }
+                }
+
+                join_attempt += 1;
+                info!("Waiting 10 seconds before retry...");
+                Timer::after_secs(10).await;
+            }
+        }
+    }
+
+    info!("========================================");
+    info!("  LoRaWAN OTAA Join Complete!");
+    info!("  Device is now connected");
+    info!("========================================");
+
     // Initialize LED
     let mut led = Output::new(p.PB15, Level::Low, Speed::Low);
 
@@ -96,8 +271,12 @@ async fn main(_spawner: Spawner) {
 
     let mut temp_int = 0i16;  // Integer temperature (Celsius)
     let mut hum_int = 0i16;   // Integer humidity (% RH)
+    let mut uplink_counter = 0u32;  // Track loop iterations for uplink timing
+    let mut tx_count = 0u32;  // Track number of uplinks sent
+    const UPLINK_INTERVAL: u32 = 30; // Send uplink every 30 loops (30 * 2s = 60s)
 
     loop {
+        uplink_counter += 1;
         // Toggle LED
         led.toggle();
 
@@ -111,13 +290,10 @@ async fn main(_spawner: Spawner) {
         // SAFETY: We're creating a temporary I2C instance that will be dropped
         // at the end of each loop iteration, releasing the hardware for reuse
         let mut i2c = unsafe {
-            I2c::new(
+            I2c::new_blocking(
                 I2C2::steal(),
                 PA12::steal(),
                 PA11::steal(),
-                I2c2Irqs,
-                NoDma,
-                NoDma,
                 Hertz(100_000),
                 i2c_config,
             )
@@ -158,18 +334,36 @@ async fn main(_spawner: Spawner) {
             .into_buffered_graphics_mode();
 
         if display.init().is_ok() {
+            // Get current SNR and RSSI from device
+            let snr = device.last_snr();
+            let rssi = device.last_rssi();
+
             // Clear display
             let _ = display.clear(BinaryColor::Off);
 
-            // Title - adjusted for 32 pixel height
-            let _ = Text::new("LoRa-1", Point::new(5, 6), text_style)
+            // Line 1: Title + TX count (128x32 = 4 lines max at 6x10 font)
+            let mut line1 = heapless::String::<32>::new();
+            let _ = core::fmt::write(&mut line1, format_args!("LoRa-1  TX:{}", tx_count));
+            let _ = Text::new(&line1, Point::new(0, 6), text_style)
                 .draw(&mut display);
 
-            // Temperature and Humidity on same line (space constrained)
-            let mut data_buf = heapless::String::<32>::new();
-            let _ = core::fmt::write(&mut data_buf, format_args!("{}C {}%", temp_int, hum_int));
-            let _ = Text::new(&data_buf, Point::new(5, 20), text_style)
+            // Line 2: Temperature and Humidity
+            let mut line2 = heapless::String::<32>::new();
+            let _ = core::fmt::write(&mut line2, format_args!("{}C {}%", temp_int, hum_int));
+            let _ = Text::new(&line2, Point::new(0, 16), text_style)
                 .draw(&mut display);
+
+            // Line 3: SNR and RSSI (only show if we have valid data, rssi != 0)
+            if rssi != 0 {
+                let mut line3 = heapless::String::<32>::new();
+                let _ = core::fmt::write(&mut line3, format_args!("S:{} R:{}", snr, rssi));
+                let _ = Text::new(&line3, Point::new(0, 26), text_style)
+                    .draw(&mut display);
+            } else {
+                // Before first uplink, show "Joined"
+                let _ = Text::new("Joined", Point::new(0, 26), text_style)
+                    .draw(&mut display);
+            }
 
             // Flush to display
             let _ = display.flush();
@@ -178,6 +372,45 @@ async fn main(_spawner: Spawner) {
         }
 
         // display and i2c are dropped here, releasing the hardware
+
+        // ============================================
+        // Step 3: Send LoRaWAN uplink every 60 seconds
+        // ============================================
+        if uplink_counter >= UPLINK_INTERVAL {
+            uplink_counter = 0;
+
+            // Encode payload: 4 bytes total
+            // Bytes 0-1: Temperature (°C * 100) as signed 16-bit big-endian
+            // Bytes 2-3: Humidity (% * 100) as unsigned 16-bit big-endian
+            let temp_encoded = (temp_int * 100) as i16;
+            let hum_encoded = (hum_int * 100) as u16;
+
+            let payload: [u8; 4] = [
+                (temp_encoded >> 8) as u8,  // Temp MSB
+                temp_encoded as u8,          // Temp LSB
+                (hum_encoded >> 8) as u8,    // Humidity MSB
+                hum_encoded as u8,           // Humidity LSB
+            ];
+
+            info!("Sending uplink: temp={}.{}°C, hum={}%", temp_int, temp_encoded.abs() % 100, hum_int);
+
+            // Send unconfirmed uplink on FPort 1
+            match device.send(&payload, 1, false).await {
+                Ok(response) => {
+                    tx_count += 1;
+                    let snr = device.last_snr();
+                    let rssi = device.last_rssi();
+                    info!("✓ Uplink sent successfully: {:?}", response);
+                    info!("  SNR: {} dB, RSSI: {} dBm, TX count: {}", snr, rssi, tx_count);
+                }
+                Err(err) => {
+                    error!("✗ Uplink failed: {:?}", err);
+                }
+            }
+
+            // Wait a bit after TX to allow radio to settle
+            Timer::after_millis(100).await;
+        }
 
         Timer::after_secs(2).await;
     }
