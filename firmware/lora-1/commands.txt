@@ -1,0 +1,1 @@
+mosquitto_sub -h 127.0.0.1 -t application/TOT/device/23ce1bfeff091fac/rx -v
