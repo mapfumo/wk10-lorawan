@@ -56,15 +56,18 @@ const BME680_ADDR_SECONDARY: u8 = 0x77; // SDO pin HIGH
 const BME680_REG_CHIP_ID: u8 = 0xD0;
 const BME680_REG_CTRL_MEAS: u8 = 0x74;
 const BME680_REG_CTRL_HUM: u8 = 0x72;
+const BME680_REG_CTRL_GAS_1: u8 = 0x71;  // Gas control register
+const BME680_REG_CTRL_GAS_0: u8 = 0x70;  // Heater control
+const BME680_REG_GAS_WAIT_0: u8 = 0x64;  // Gas wait time
+const BME680_REG_RES_HEAT_0: u8 = 0x5A;  // Heater resistance
 const BME680_REG_PRESS_MSB: u8 = 0x1F;
 const BME680_REG_TEMP_MSB: u8 = 0x22;
 const BME680_REG_HUM_MSB: u8 = 0x25;
+const BME680_REG_GAS_R_MSB: u8 = 0x2A;   // Gas resistance MSB
+const BME680_REG_GAS_R_LSB: u8 = 0x2B;   // Gas resistance LSB + range
 
 // BME680 control values
 const BME680_OSRS_H_X2: u8 = 0x02;  // Humidity oversampling x2
-const BME680_OSRS_T_X2: u8 = 0x40;  // Temperature oversampling x2
-const BME680_OSRS_P_X2: u8 = 0x08;  // Pressure oversampling x2
-const BME680_MODE_FORCED: u8 = 0x01; // Forced mode (one measurement)
 
 // LoRaWAN configuration constants
 const MAX_TX_POWER: u8 = 14; // AU915 max TX power
@@ -351,10 +354,18 @@ async fn main(_spawner: Spawner) {
             if i2c.blocking_write(bme_addr, &[BME680_REG_CTRL_MEAS, 0x00]).is_ok() {
                 Timer::after_millis(20).await;
 
-                // Trigger forced measurement: 0x25 = temp x1, press x1, forced mode
+                // Configure gas heater for measurement
+                // res_heat_0: heater resistance target (~300°C, value ~0x73 typical)
+                let _ = i2c.blocking_write(bme_addr, &[BME680_REG_RES_HEAT_0, 0x73]);
+                // gas_wait_0: heater duration (0x59 = 100ms with multiplier)
+                let _ = i2c.blocking_write(bme_addr, &[BME680_REG_GAS_WAIT_0, 0x59]);
+                // ctrl_gas_1: run_gas=1, nb_conv=0 (use heater profile 0)
+                let _ = i2c.blocking_write(bme_addr, &[BME680_REG_CTRL_GAS_1, 0x10]);
+
+                // Trigger forced measurement with gas: 0x25 = temp x1, press x1, forced mode
                 if i2c.blocking_write(bme_addr, &[BME680_REG_CTRL_MEAS, 0x25]).is_ok() {
                     sensor_found = true;
-                    // Wait for measurement to complete (2000ms like reference)
+                    // Wait for measurement + gas heater to complete
                     Timer::after_millis(2000).await;
 
                 // Read temperature (3 bytes starting at 0x22)
@@ -398,7 +409,46 @@ async fn main(_spawner: Spawner) {
                     pressure_int = (press_pa / 100) as i16; // Convert Pa to hPa
                 }
 
-                info!("✓ BME680: {}°C, {}% RH, {} hPa", temp_int, hum_int, pressure_int);
+                // Read gas resistance (2 bytes at 0x2A-0x2B)
+                // gas_r_msb[7:0] = ADC bits [9:2]
+                // gas_r_lsb[7:6] = ADC bits [1:0], [5:4] = gas_valid + heat_stab, [3:0] = gas_range
+                let mut gas_data = [0u8; 2];
+                if i2c.blocking_write(bme_addr, &[BME680_REG_GAS_R_MSB]).is_ok()
+                    && i2c.blocking_read(bme_addr, &mut gas_data).is_ok() {
+
+                    let gas_adc = ((gas_data[0] as u16) << 2) | ((gas_data[1] as u16) >> 6);
+                    let gas_range = gas_data[1] & 0x0F;
+                    let gas_valid = (gas_data[1] >> 5) & 0x01;
+                    let heat_stab = (gas_data[1] >> 4) & 0x01;
+
+                    if gas_valid == 1 && heat_stab == 1 && gas_adc > 0 {
+                        // Lookup table for gas range (from BME680 datasheet)
+                        // These are the const_array1 values for resistance calculation
+                        const GAS_RANGE_R1: [u32; 16] = [
+                            2147483647, 2147483647, 2147483647, 2147483647,
+                            2147483647, 2126008810, 2147483647, 2130303777,
+                            2147483647, 2147483647, 2143188679, 2136746228,
+                            2147483647, 2126008810, 2147483647, 2147483647,
+                        ];
+                        const GAS_RANGE_R2: [u32; 16] = [
+                            4096000000, 2048000000, 1024000000, 512000000,
+                            255744255, 127110228, 64000000, 32258064,
+                            16016016, 8000000, 4000000, 2000000,
+                            1000000, 500000, 250000, 125000,
+                        ];
+
+                        // Simplified resistance calculation (avoiding float)
+                        // gas_res = (range_r2 / gas_adc) * range_factor
+                        let range_idx = gas_range as usize;
+                        if range_idx < 16 {
+                            let var1 = GAS_RANGE_R2[range_idx] / (gas_adc as u32);
+                            // Convert to kOhm (divide by 1000)
+                            gas_int = (var1 / 1000) as u16;
+                        }
+                    }
+                }
+
+                info!("✓ BME680: {}°C, {}% RH, {} hPa, {} kOhm", temp_int, hum_int, pressure_int, gas_int);
                 }
             }
         }
