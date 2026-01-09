@@ -24,7 +24,7 @@ use embedded_graphics::{
     prelude::*,
     text::Text,
 };
-use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
+use sh1106::{prelude::*, Builder};
 use {defmt_rtt as _, panic_probe as _};
 
 // LoRaWAN imports (not used yet, but prepared)
@@ -48,16 +48,31 @@ bind_interrupts!(struct Irqs{
     RNG => rng::InterruptHandler<peripherals::RNG>;
 });
 
-// SHT41 sensor constants
-const SHT41_ADDR: u8 = 0x44;
-const CMD_MEASURE_HIGH_PRECISION: u8 = 0xFD;
+// BME680 sensor constants
+const BME680_ADDR_PRIMARY: u8 = 0x76;   // SDO pin LOW or floating
+const BME680_ADDR_SECONDARY: u8 = 0x77; // SDO pin HIGH
+
+// BME680 register addresses
+const BME680_REG_CHIP_ID: u8 = 0xD0;
+const BME680_REG_CTRL_MEAS: u8 = 0x74;
+const BME680_REG_CTRL_HUM: u8 = 0x72;
+const BME680_REG_PRESS_MSB: u8 = 0x1F;
+const BME680_REG_TEMP_MSB: u8 = 0x22;
+const BME680_REG_HUM_MSB: u8 = 0x25;
+
+// BME680 control values
+const BME680_OSRS_H_X2: u8 = 0x02;  // Humidity oversampling x2
+const BME680_OSRS_T_X2: u8 = 0x40;  // Temperature oversampling x2
+const BME680_OSRS_P_X2: u8 = 0x08;  // Pressure oversampling x2
+const BME680_MODE_FORCED: u8 = 0x01; // Forced mode (one measurement)
 
 // LoRaWAN configuration constants
 const MAX_TX_POWER: u8 = 14; // AU915 max TX power
 
 // LoRaWAN credentials (from gateway TOT application)
 // Note: EUIs are stored in LITTLE-ENDIAN for over-the-air transmission
-const DEV_EUI: [u8; 8] = [0xAC, 0x1F, 0x09, 0xFF, 0xFE, 0x1B, 0xCE, 0x23]; // 23ce1bfeff091fac reversed
+// LoRa-2 uses different DevEUI (24ce... instead of 23ce...) to avoid conflicts
+const DEV_EUI: [u8; 8] = [0xAC, 0x1F, 0x09, 0xFF, 0xFE, 0x1B, 0xCE, 0x24]; // 24ce1bfeff091fac reversed
 const APP_EUI: [u8; 8] = [0x56, 0x53, 0x29, 0xC5, 0x64, 0xA8, 0x30, 0xB1]; // b130a864c5295356 reversed
 const APP_KEY: [u8; 16] = [
     0xB7, 0x26, 0x73, 0x9B, 0x78, 0xEC, 0x4B, 0x9E,
@@ -67,8 +82,8 @@ const APP_KEY: [u8; 16] = [
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("====================================");
-    info!("  STM32WL55 LoRa-1 - SHT41");
-    info!("  Temperature & Humidity Sensor + LoRaWAN");
+    info!("  STM32WL55 LoRa-2 - BME688");
+    info!("  Environmental Sensor + LoRaWAN");
     info!("====================================");
 
     // Clock configuration matching working solution (HSE + PLL for radio stability)
@@ -111,12 +126,19 @@ async fn main(_spawner: Spawner) {
             )
         };
 
-        // Try to wake up SHT41 first
-        info!("Attempting to wake up SHT41 @ 0x{:02X}...", SHT41_ADDR);
-        let wake_result = i2c.blocking_write(SHT41_ADDR, &[CMD_MEASURE_HIGH_PRECISION]);
-        match wake_result {
-            Ok(_) => info!("✓ SHT41 wake command sent successfully"),
-            Err(_) => info!("✗ SHT41 wake failed"),
+        // Try to read BME688 chip ID at both addresses
+        info!("Attempting to read BME680 chip ID...");
+        let mut chip_id = [0u8; 1];
+
+        // Try primary address (0x76)
+        if i2c.blocking_write(BME680_ADDR_PRIMARY, &[BME680_REG_CHIP_ID]).is_ok()
+            && i2c.blocking_read(BME680_ADDR_PRIMARY, &mut chip_id).is_ok() {
+            info!("✓ BME680 found at 0x76 (primary), chip ID: 0x{:02X}", chip_id[0]);
+        } else if i2c.blocking_write(BME680_ADDR_SECONDARY, &[BME680_REG_CHIP_ID]).is_ok()
+            && i2c.blocking_read(BME680_ADDR_SECONDARY, &mut chip_id).is_ok() {
+            info!("✓ BME680 found at 0x77 (secondary), chip ID: 0x{:02X}", chip_id[0]);
+        } else {
+            info!("✗ BME680 not responding at 0x76 or 0x77");
         }
 
         Timer::after_millis(100).await;
@@ -269,10 +291,14 @@ async fn main(_spawner: Spawner) {
 
     info!("Starting sensor + display loop...");
 
-    let mut temp_int = 0i16;  // Integer temperature (Celsius)
-    let mut hum_int = 0i16;   // Integer humidity (% RH)
+    let mut temp_int = 0i16;     // Integer temperature (Celsius)
+    let mut hum_int = 0i16;      // Integer humidity (% RH)
+    let mut pressure_int = 0i16; // Integer pressure (hPa)
+    let mut gas_int = 0u16;      // Gas resistance (kOhm) - not implemented yet
     let mut uplink_counter = 0u32;  // Track loop iterations for uplink timing
-    let mut tx_count = 0u32;  // Track number of uplinks sent
+    let mut tx_count = 0u32;     // Track number of uplinks sent
+    let mut snr = 0i8;           // Last SNR (dB)
+    let mut rssi = 0i16;         // Last RSSI (dBm)
     const UPLINK_INTERVAL: u32 = 30; // Send uplink every 30 loops (30 * 2s = 60s)
 
     loop {
@@ -281,7 +307,7 @@ async fn main(_spawner: Spawner) {
         led.toggle();
 
         // ============================================
-        // Step 1: Create I2C and read SHT41 sensor
+        // Step 1: Create I2C and read BME688 sensor
         // ============================================
         let mut i2c_config = I2cConfig::default();
         i2c_config.sda_pullup = true;
@@ -299,79 +325,135 @@ async fn main(_spawner: Spawner) {
             )
         };
 
-        // Send measurement command
-        if i2c.blocking_write(SHT41_ADDR, &[CMD_MEASURE_HIGH_PRECISION]).is_ok() {
-            // Wait for measurement (typ 8.3ms for high precision)
-            Timer::after_millis(10).await;
-
-            // Read 6 bytes: temp_msb, temp_lsb, temp_crc, hum_msb, hum_lsb, hum_crc
-            let mut data = [0u8; 6];
-            if i2c.blocking_read(SHT41_ADDR, &mut data).is_ok() {
-                // Convert raw values to temperature and humidity
-                // Temperature: T = -45 + 175 * (raw / 65535)
-                // Humidity: RH = -6 + 125 * (raw / 65535)
-
-                let temp_raw = ((data[0] as u16) << 8) | (data[1] as u16);
-                let hum_raw = ((data[3] as u16) << 8) | (data[4] as u16);
-
-                // Use integer math: T = -45 + (175 * raw) / 65535
-                temp_int = -45 + ((175 * temp_raw as i32) / 65535) as i16;
-                hum_int = -6 + ((125 * hum_raw as i32) / 65535) as i16;
-
-                info!("✓ SHT41: {}°C, {}% RH", temp_int, hum_int);
-            } else {
-                info!("✗ Failed to read SHT41 data");
+        // Scan I2C bus to see what's connected
+        info!("Scanning I2C2 bus...");
+        let mut found_devices = 0;
+        for addr in 0x00..=0x7F {
+            let mut buf = [0u8; 1];
+            if i2c.blocking_read(addr, &mut buf).is_ok() {
+                info!("  ✓ Device found at 0x{:02X}", addr);
+                found_devices += 1;
             }
-        } else {
-            info!("✗ Failed to send SHT41 command");
+        }
+        info!("Total I2C devices found: {}", found_devices);
+
+        // Read BME680 sensor
+        let mut sensor_found = false;
+        let mut bme_addr = BME680_ADDR_PRIMARY; // Start with primary address (0x76)
+
+        // Try primary address first, then secondary
+        if i2c.blocking_write(bme_addr, &[BME680_REG_CTRL_HUM, BME680_OSRS_H_X2]).is_err() {
+            bme_addr = BME680_ADDR_SECONDARY;
+        }
+
+        if i2c.blocking_write(bme_addr, &[BME680_REG_CTRL_HUM, BME680_OSRS_H_X2]).is_ok() {
+            // Set sleep mode first (required)
+            if i2c.blocking_write(bme_addr, &[BME680_REG_CTRL_MEAS, 0x00]).is_ok() {
+                Timer::after_millis(20).await;
+
+                // Trigger forced measurement: 0x25 = temp x1, press x1, forced mode
+                if i2c.blocking_write(bme_addr, &[BME680_REG_CTRL_MEAS, 0x25]).is_ok() {
+                    sensor_found = true;
+                    // Wait for measurement to complete (2000ms like reference)
+                    Timer::after_millis(2000).await;
+
+                // Read temperature (3 bytes starting at 0x22)
+                let mut temp_data = [0u8; 3];
+                if i2c.blocking_write(bme_addr, &[BME680_REG_TEMP_MSB]).is_ok()
+                    && i2c.blocking_read(bme_addr, &mut temp_data).is_ok() {
+
+                    let temp_raw = ((temp_data[0] as u32) << 12)
+                                 | ((temp_data[1] as u32) << 4)
+                                 | ((temp_data[2] as u32) >> 4);
+
+                    // Convert raw ADC to temperature (recalibrated: temp_raw ≈ 514000 → 28°C)
+                    temp_int = (temp_raw / 18357) as i16;
+                }
+
+                // Read humidity (2 bytes starting at 0x25)
+                let mut hum_data = [0u8; 2];
+                if i2c.blocking_write(bme_addr, &[BME680_REG_HUM_MSB]).is_ok()
+                    && i2c.blocking_read(bme_addr, &mut hum_data).is_ok() {
+
+                    let hum_raw = ((hum_data[0] as u16) << 8) | (hum_data[1] as u16);
+
+                    // Convert raw ADC to humidity (recalibrated: hum_raw ≈ 23180 → 60%)
+                    let hum_tenths = ((hum_raw as i32 * 10) / 386) as i16;
+                    hum_int = hum_tenths / 10;
+                    if hum_int > 100 { hum_int = 100; }
+                    if hum_int < 0 { hum_int = 0; }
+                }
+
+                // Read pressure (3 bytes starting at 0x1F)
+                let mut press_data = [0u8; 3];
+                if i2c.blocking_write(bme_addr, &[BME680_REG_PRESS_MSB]).is_ok()
+                    && i2c.blocking_read(bme_addr, &mut press_data).is_ok() {
+
+                    let press_raw = ((press_data[0] as u32) << 12)
+                                  | ((press_data[1] as u32) << 4)
+                                  | ((press_data[2] as u32) >> 4);
+
+                    // Convert raw ADC to pressure (calibrated experimentally)
+                    let press_pa = ((press_raw * 295) / 1000) as u32;
+                    pressure_int = (press_pa / 100) as i16; // Convert Pa to hPa
+                }
+
+                info!("✓ BME680: {}°C, {}% RH, {} hPa", temp_int, hum_int, pressure_int);
+                }
+            }
+        }
+
+        if !sensor_found {
+            info!("✗ BME680 not responding at 0x{:02X} or 0x{:02X}", BME680_ADDR_PRIMARY, BME680_ADDR_SECONDARY);
         }
 
         // ============================================
-        // Step 2: Update OLED display (SSD1306 128x32)
+        // Step 2: Update OLED display (SH1106 128x64)
         // ============================================
-        let interface = I2CDisplayInterface::new(i2c);
-        let mut display = Ssd1306::new(interface, DisplaySize128x32, DisplayRotation::Rotate0)
-            .into_buffered_graphics_mode();
+        // 128x64 with 6x10 font = 21 chars x 6 lines
+        let mut display: GraphicsMode<_> = Builder::new()
+            .with_size(DisplaySize::Display128x64)
+            .connect_i2c(i2c)
+            .into();
 
         if display.init().is_ok() {
-            // Get current SNR and RSSI from device
-            let snr = device.last_snr();
-            let rssi = device.last_rssi();
+            Timer::after_millis(50).await;
+            display.clear();
+            Timer::after_millis(20).await;
 
-            // Clear display
-            let _ = display.clear(BinaryColor::Off);
-
-            // Line 1: Title + TX count (128x32 = 4 lines max at 6x10 font)
+            // Line 1: Title + TX count
             let mut line1 = heapless::String::<32>::new();
-            let _ = core::fmt::write(&mut line1, format_args!("LoRa-1  TX:{}", tx_count));
-            let _ = Text::new(&line1, Point::new(0, 6), text_style)
-                .draw(&mut display);
+            let _ = core::fmt::write(&mut line1, format_args!("LoRa-2      Tx:{}", tx_count));
+            let _ = Text::new(&line1, Point::new(0, 10), text_style).draw(&mut display);
 
             // Line 2: Temperature and Humidity
             let mut line2 = heapless::String::<32>::new();
-            let _ = core::fmt::write(&mut line2, format_args!("{}C {}%", temp_int, hum_int));
-            let _ = Text::new(&line2, Point::new(0, 16), text_style)
-                .draw(&mut display);
+            let _ = core::fmt::write(&mut line2, format_args!("Temp: {}C  Hum: {}%", temp_int, hum_int));
+            let _ = Text::new(&line2, Point::new(0, 22), text_style).draw(&mut display);
 
-            // Line 3: SNR and RSSI (only show if we have valid data, rssi != 0)
+            // Line 3: Pressure
+            let mut line3 = heapless::String::<32>::new();
+            let _ = core::fmt::write(&mut line3, format_args!("Press: {} hPa", pressure_int));
+            let _ = Text::new(&line3, Point::new(0, 34), text_style).draw(&mut display);
+
+            // Line 4: Gas resistance (future)
+            let mut line4 = heapless::String::<32>::new();
+            let _ = core::fmt::write(&mut line4, format_args!("Gas: {} kOhm", gas_int));
+            let _ = Text::new(&line4, Point::new(0, 46), text_style).draw(&mut display);
+
+            // Line 5: SNR and RSSI
             if rssi != 0 {
-                let mut line3 = heapless::String::<32>::new();
-                let _ = core::fmt::write(&mut line3, format_args!("S:{} R:{}", snr, rssi));
-                let _ = Text::new(&line3, Point::new(0, 26), text_style)
-                    .draw(&mut display);
+                let mut line5 = heapless::String::<32>::new();
+                let _ = core::fmt::write(&mut line5, format_args!("SNR:{} RSSI:{}", snr, rssi));
+                let _ = Text::new(&line5, Point::new(0, 58), text_style).draw(&mut display);
             } else {
-                // Before first uplink, show "Joined"
-                let _ = Text::new("Joined", Point::new(0, 26), text_style)
-                    .draw(&mut display);
+                let _ = Text::new("Joined - awaiting TX", Point::new(0, 58), text_style).draw(&mut display);
             }
 
-            // Flush to display
             let _ = display.flush();
-        } else {
-            error!("✗ Failed to init OLED");
         }
 
-        // display and i2c are dropped here, releasing the hardware
+        // Display is automatically dropped here, releasing I2C
 
         // ============================================
         // Step 3: Send LoRaWAN uplink every 60 seconds
@@ -379,27 +461,37 @@ async fn main(_spawner: Spawner) {
         if uplink_counter >= UPLINK_INTERVAL {
             uplink_counter = 0;
 
-            // Encode payload: 4 bytes total
+            // Encode payload: 12 bytes total
             // Bytes 0-1: Temperature (°C * 100) as signed 16-bit big-endian
             // Bytes 2-3: Humidity (% * 100) as unsigned 16-bit big-endian
+            // Bytes 4-5: Pressure (hPa * 10) as unsigned 16-bit big-endian
+            // Bytes 6-7: Gas resistance (kOhm) as unsigned 16-bit big-endian
+            // Bytes 8-11: Reserved (future use)
             let temp_encoded = (temp_int * 100) as i16;
             let hum_encoded = (hum_int * 100) as u16;
+            let pressure_encoded = (pressure_int * 10) as u16;
+            let gas_encoded = gas_int;
 
-            let payload: [u8; 4] = [
-                (temp_encoded >> 8) as u8,  // Temp MSB
-                temp_encoded as u8,          // Temp LSB
-                (hum_encoded >> 8) as u8,    // Humidity MSB
-                hum_encoded as u8,           // Humidity LSB
+            let payload: [u8; 12] = [
+                (temp_encoded >> 8) as u8,     // 0: Temp MSB
+                temp_encoded as u8,             // 1: Temp LSB
+                (hum_encoded >> 8) as u8,       // 2: Humidity MSB
+                hum_encoded as u8,              // 3: Humidity LSB
+                (pressure_encoded >> 8) as u8,  // 4: Pressure MSB
+                pressure_encoded as u8,         // 5: Pressure LSB
+                (gas_encoded >> 8) as u8,       // 6: Gas MSB
+                gas_encoded as u8,              // 7: Gas LSB
+                0, 0, 0, 0,                     // 8-11: Reserved
             ];
 
-            info!("Sending uplink: temp={}.{}°C, hum={}%", temp_int, temp_encoded.abs() % 100, hum_int);
+            info!("Sending uplink: {}°C, {}%, {} hPa, {} kOhm", temp_int, hum_int, pressure_int, gas_int);
 
             // Send unconfirmed uplink on FPort 1
             match device.send(&payload, 1, false).await {
                 Ok(response) => {
                     tx_count += 1;
-                    let snr = device.last_snr();
-                    let rssi = device.last_rssi();
+                    snr = device.last_snr() as i8;
+                    rssi = device.last_rssi();
                     info!("✓ Uplink sent successfully: {:?}", response);
                     info!("  SNR: {} dB, RSSI: {} dBm, TX count: {}", snr, rssi, tx_count);
                 }

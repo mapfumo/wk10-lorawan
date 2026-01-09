@@ -1,5 +1,5 @@
 [package]
-name = "lora-1"
+name = "lora-2"
 version = "0.1.0"
 edition = "2021"
 
@@ -31,12 +31,12 @@ defmt = "0.3"
 defmt-rtt = "0.4"
 
 # Display driver
-ssd1306 = "0.8"  # OLED display driver (SSD1306 128x32)
+sh1106 = "0.5"  # OLED display driver (SH1106 128x64)
 embedded-graphics = "0.8"  # Graphics primitives for drawing text
 heapless = "0.8"  # No-std string formatting
 
 # Sensor drivers
-sht4x = "0.2"  # SHT41 temperature + humidity sensor
+bme680 = "0.6"  # BME680 environmental sensor
 embedded-hal = "1.0"  # Hardware abstraction layer traits
 embedded-hal-async = "1.0.0"  # Async HAL traits for lora-phy
 
