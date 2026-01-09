@@ -1,0 +1,21 @@
+# LoRaWAN Data Pipeline - Telegraf for Gateway MQTT → InfluxDB
+# Connects to existing Week 7 infrastructure (influxdb, grafana)
+
+services:
+  telegraf:
+    image: telegraf:latest
+    container_name: wk10-telegraf
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - ./telegraf/decode_lorawan.py:/etc/telegraf/decode_lorawan.py:ro
+    environment:
+      - GATEWAY_MQTT_HOST=10.10.10.254
+    restart: unless-stopped
+    networks:
+      - wk7-mqtt-influx_iiot-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  wk7-mqtt-influx_iiot-network:
+    external: true

@@ -1,1 +1,2 @@
 alias lora2=probe-rs run --chip STM32WL55JCIx --probe 0483:374e:0026003A3234510A33353533 target/thumbv7em-none-eabihf/release/lora-2
+git add -A && gcmsg Increments... && gp

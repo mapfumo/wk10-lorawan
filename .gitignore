@@ -52,3 +52,10 @@ mosquitto-data/
 *.tmp
 *.bak
 *.orig
+
+# firmware images
+firmware/lora-1/target/
+firmware/lora-2/target/
+
+# patches
+lorawan-device-patched/target

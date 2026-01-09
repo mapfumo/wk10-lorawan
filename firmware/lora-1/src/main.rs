@@ -273,12 +273,10 @@ async fn main(_spawner: Spawner) {
     let mut hum_int = 0i16;   // Integer humidity (% RH)
     let mut uplink_counter = 0u32;  // Track loop iterations for uplink timing
     let mut tx_count = 0u32;  // Track number of uplinks sent
-    const UPLINK_INTERVAL: u32 = 30; // Send uplink every 30 loops (30 * 2s = 60s)
+    const UPLINK_INTERVAL: u32 = 15; // Send uplink every 15 loops (~30s)
 
     loop {
         uplink_counter += 1;
-        // Toggle LED
-        led.toggle();
 
         // ============================================
         // Step 1: Create I2C and read SHT41 sensor
@@ -394,6 +392,9 @@ async fn main(_spawner: Spawner) {
 
             info!("Sending uplink: temp={}.{}°C, hum={}%", temp_int, temp_encoded.abs() % 100, hum_int);
 
+            // LED on during transmission
+            led.set_high();
+
             // Send unconfirmed uplink on FPort 1
             match device.send(&payload, 1, false).await {
                 Ok(response) => {
@@ -407,6 +408,9 @@ async fn main(_spawner: Spawner) {
                     error!("✗ Uplink failed: {:?}", err);
                 }
             }
+
+            // LED off after transmission
+            led.set_low();
 
             // Wait a bit after TX to allow radio to settle
             Timer::after_millis(100).await;

@@ -36,9 +36,9 @@ def decode_lora1_payload(base64_data):
         # Unpack: >h = signed 16-bit big-endian, >H = unsigned 16-bit big-endian
         temp_raw, hum_raw = struct.unpack('>hH', payload)
 
-        # Convert to actual values
-        temp_celsius = temp_raw / 100.0
-        humidity_percent = hum_raw / 100.0
+        # Convert to actual values (divide by 1000 based on observed data)
+        temp_celsius = temp_raw / 1000.0
+        humidity_percent = hum_raw / 1000.0
 
         return {
             'node': 'LoRa-1',
@@ -65,10 +65,10 @@ def decode_lora2_payload(base64_data):
         # Unpack: >h = signed 16-bit BE, >H = unsigned 16-bit BE
         temp_raw, hum_raw, press_raw, gas_raw = struct.unpack('>hHHH', payload[:8])
 
-        # Convert to actual values
-        temp_celsius = temp_raw / 100.0
-        humidity_percent = hum_raw / 100.0
-        pressure_hpa = press_raw / 10.0
+        # Convert to actual values (divide by 1000 based on observed data)
+        temp_celsius = temp_raw / 1000.0
+        humidity_percent = hum_raw / 1000.0
+        pressure_hpa = press_raw / 100.0
         gas_resistance_kohm = gas_raw
 
         return {

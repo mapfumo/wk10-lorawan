@@ -41,12 +41,12 @@ embedded-hal = "1.0"  # Hardware abstraction layer traits
 embedded-hal-async = "1.0.0"  # Async HAL traits for lora-phy
 
 # LoRaWAN stack - using patched versions for embassy-time 0.4.0 compatibility
-lora-phy = { path = "/home/tony/dev/lora-phy-patched", features = ["lorawan-radio"] }
-lorawan-device = { path = "/home/tony/dev/lorawan-device-patched", features = ["embassy-time", "default-crypto"] }
+lora-phy = { path = "../../lora-phy-patched", features = ["lorawan-radio"] }
+lorawan-device = { path = "../../lorawan-device-patched", features = ["embassy-time", "default-crypto"] }
 
 # Patch lora-phy to use our patched lorawan-device
 [patch.crates-io]
-lorawan-device = { path = "/home/tony/dev/lorawan-device-patched" }
+lorawan-device = { path = "../../lorawan-device-patched" }
 
 [profile.release]
 debug = 2  # Full debug symbols for probe-rs

@@ -302,12 +302,10 @@ async fn main(_spawner: Spawner) {
     let mut tx_count = 0u32;     // Track number of uplinks sent
     let mut snr = 0i8;           // Last SNR (dB)
     let mut rssi = 0i16;         // Last RSSI (dBm)
-    const UPLINK_INTERVAL: u32 = 30; // Send uplink every 30 loops (30 * 2s = 60s)
+    const UPLINK_INTERVAL: u32 = 15; // Send uplink every 15 loops (~30s)
 
     loop {
         uplink_counter += 1;
-        // Toggle LED
-        led.toggle();
 
         // ============================================
         // Step 1: Create I2C and read BME688 sensor
@@ -536,6 +534,9 @@ async fn main(_spawner: Spawner) {
 
             info!("Sending uplink: {}°C, {}%, {} hPa, {} kOhm", temp_int, hum_int, pressure_int, gas_int);
 
+            // LED on during transmission
+            led.set_high();
+
             // Send unconfirmed uplink on FPort 1
             match device.send(&payload, 1, false).await {
                 Ok(response) => {
@@ -549,6 +550,9 @@ async fn main(_spawner: Spawner) {
                     error!("✗ Uplink failed: {:?}", err);
                 }
             }
+
+            // LED off after transmission
+            led.set_low();
 
             // Wait a bit after TX to allow radio to settle
             Timer::after_millis(100).await;
