@@ -1,15 +1,16 @@
-# LoRaWAN Data Pipeline - Telegraf for Gateway MQTT → InfluxDB
+# LoRaWAN Data Pipeline - Python MQTT→InfluxDB Bridge
 # Connects to existing Week 7 infrastructure (influxdb, grafana)
 
 services:
-  telegraf:
-    image: telegraf:latest
-    container_name: wk10-telegraf
+  mqtt-bridge:
+    image: python:3.11-slim
+    container_name: wk10-mqtt-bridge
+    working_dir: /app
+    command: python3 mqtt_to_influx.py
     volumes:
-      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
-      - ./telegraf/decode_lorawan.py:/etc/telegraf/decode_lorawan.py:ro
+      - ./mqtt_to_influx.py:/app/mqtt_to_influx.py:ro
     environment:
-      - GATEWAY_MQTT_HOST=10.10.10.254
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
     networks:
       - wk7-mqtt-influx_iiot-network

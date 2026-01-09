@@ -1,171 +1,127 @@
-# Week 10: LoRaWAN Migration with STM32WL55
+# Week 10: LoRaWAN Sensor Network with STM32WL55
 
-**Project**: LoRaWAN Migration - Native STM32WL integrated LoRaWAN stack
-**Hardware**: 2x NUCLEO-WL55JC1 with RAK7268V2 Gateway
-**Network Server**: RAK Built-in LoRa Server (AU915) ✅ Operational
-**Status**: 🚧 In Progress - Gateway ✅ | NODE_1 Hardware ✅
+**Project**: LoRaWAN Sensor Network - Native STM32WL integrated radio
+**Hardware**: 2x NUCLEO-WL55JC1 + RAK7268V2 Gateway
+**Network Server**: RAK Built-in LoRa Server (AU915)
+**Status**: ✅ **COMPLETE** - Both nodes operational, Grafana dashboard live
 
 ---
 
-![Image](image.png)
-
 ## System Overview
 
-Week 10 migrates from point-to-point LoRa (RYLR998) to production LoRaWAN infrastructure using native STM32WL radio peripherals. This creates a unified 4-node monitoring system combining Week 9's Modbus TCP devices with new LoRaWAN nodes.
+Week 10 implements a production LoRaWAN sensor network using STM32WL55 microcontrollers with native SubGHz radio. The system includes a complete data pipeline from sensors to Grafana visualization.
 
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         UNIFIED 4-NODE SYSTEM                        │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  ETHERNET NODES (Week 9)          LORAWAN NODES (Week 10)           │
-│  ┌──────────────────────┐         ┌──────────────────────┐          │
-│  │ MODBUS_1             │         │ WL55 Node 1          │          │
-│  │ F446RE + W5500       │         │ STM32WL55JC1         │          │
-│  │ 10.10.10.100:502     │         │ BME688 + OLED        │          │
-│  │ SHT3x sensor         │         │ DevEUI: xxx...       │          │
-│  └──────────────────────┘         └──────────────────────┘          │
-│           │                                 │                        │
-│           │                                 │ LoRaWAN               │
-│           │ Modbus TCP                      │ AU915                 │
-│           │                                 ▼                        │
-│  ┌──────────────────────┐         ┌──────────────────────┐          │
-│  │ MODBUS_2             │         │ RAK7268V2 Gateway    │          │
-│  │ F446RE + W5500       │         │ 8-channel AU915      │          │
-│  │ 10.10.10.200:502     │         │ ChirpStack Bridge    │          │
-│  │ SHT3x sensor         │         └──────────────────────┘          │
-│  └──────────────────────┘                   │                        │
-│           │                                 │                        │
-│           ▼                                 ▼                        │
-│  ┌─────────────────────────────────────────────────┐                │
-│  │         OPC-UA Server (opcua_modbus_gateway.py) │                │
-│  │         ChirpStack MQTT Bridge                  │                │
-│  └─────────────────────────────────────────────────┘                │
-│                          │                                           │
-│                          ▼                                           │
-│  ┌─────────────────────────────────────────────────┐                │
-│  │  MQTT Broker (Mosquitto)                        │                │
-│  └─────────────────────────────────────────────────┘                │
-│                          │                                           │
-│                          ▼                                           │
-│  ┌─────────────────────────────────────────────────┐                │
-│  │  InfluxDB (Time-series Database)                │                │
-│  └─────────────────────────────────────────────────┘                │
-│                          │                                           │
-│                          ▼                                           │
-│  ┌─────────────────────────────────────────────────┐                │
-│  │  Grafana Dashboard (4-node unified view)        │                │
-│  │  - 2x Modbus nodes (SHT3x)                      │                │
-│  │  - 2x LoRaWAN nodes (BME688 + SHT41)            │                │
-│  └─────────────────────────────────────────────────┘                │
-│                                                                       │
-│  ┌──────────────────────┐                                            │
-│  │ WL55 Node 2          │                                            │
-│  │ STM32WL55JC1         │                                            │
-│  │ SHT41 + OLED         │                                            │
-│  │ DevEUI: yyy...       │                                            │
-│  └──────────────────────┘                                            │
-│           │                                                           │
-│           └─────────────► LoRaWAN AU915 ──────────┘                  │
-│                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     LORAWAN SENSOR NETWORK                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────────────┐         ┌──────────────────────┐              │
+│  │ LoRa-1               │         │ LoRa-2               │              │
+│  │ STM32WL55JC1         │         │ STM32WL55JC1         │              │
+│  │ SHT41 (Temp/Hum)     │         │ BME680 (Env Sensor)  │              │
+│  │ SSD1306 OLED 128x32  │         │ SH1106 OLED 128x64   │              │
+│  │ DevEUI: 23ce1b...    │         │ DevEUI: 24ce1b...    │              │
+│  └──────────┬───────────┘         └──────────┬───────────┘              │
+│             │                                 │                          │
+│             │         LoRaWAN AU915           │                          │
+│             │        (915.2-916.6 MHz)        │                          │
+│             └────────────────┬────────────────┘                          │
+│                              │                                           │
+│                              ▼                                           │
+│                    ┌──────────────────────┐                             │
+│                    │ RAK7268V2 Gateway    │                             │
+│                    │ Built-in LoRa Server │                             │
+│                    │ MQTT: 10.10.10.254   │                             │
+│                    │ Application: "TOT"   │                             │
+│                    └──────────┬───────────┘                             │
+│                               │                                          │
+│                               │ MQTT (TCP :1883)                        │
+│                               ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                     Docker Services                              │   │
+│  │  ┌─────────────────┐  ┌─────────────┐  ┌─────────────────────┐  │   │
+│  │  │ wk10-mqtt-bridge│─▶│ wk7-influxdb│─▶│ wk7-grafana         │  │   │
+│  │  │ Python decoder  │  │ Time-series │  │ Dashboard           │  │   │
+│  │  │                 │  │ :8086       │  │ :3000               │  │   │
+│  │  └─────────────────┘  └─────────────┘  └─────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Hardware Configuration
 
-### Node 1 - SHT41 High-Precision Sensor ✅ WORKING
+### LoRa-1 - SHT41 Temperature/Humidity Sensor ✅ OPERATIONAL
 
-- **MCU**: STM32WL55JC1 (NUCLEO-WL55JC1)
-  - Serial: 003E00463234510A33353533
-  - 256KB Flash, 64KB RAM
-  - Integrated SubGHz radio (LoRaWAN)
-- **Sensor**: SHT41 (I2C 0x44)
-  - High-precision Temperature & Humidity
-  - Current readings: 27°C, 60% RH
-  - Payload: ~4 bytes
-- **Display**: SH1106 OLED 128x64 (I2C 0x3C)
-  - Real-time sensor data updates every 2s
-  - Node ID, temperature, humidity, status
-- **I2C Bus**: I2C2 (PA12=SCL, PA11=SDA) at 100 kHz
-- **Connection**: Breadboard (STEMMA QT cables bypassed)
-- **Status**: Hardware integration complete, ready for LoRaWAN stack
+| Component | Specification |
+|-----------|---------------|
+| **MCU** | STM32WL55JC1 (Probe: 003E00463234510A33353533) |
+| **Sensor** | SHT41 (I2C 0x44) - High-precision temp/humidity |
+| **Display** | SSD1306 OLED 128x32 (I2C 0x3C) |
+| **I2C Bus** | I2C2: PA12 (SCL), PA11 (SDA) |
+| **Radio** | Integrated SubGHz SX126x |
+| **DevEUI** | 23ce1bfeff091fac |
+| **Payload** | 4 bytes (temp + humidity) |
 
-### Node 2 - BME688 Environmental Sensor ⏳ PLANNED
+**Current Readings**: ~31°C, 58% RH
+**Uplink Interval**: ~30 seconds
 
-- **MCU**: STM32WL55JC1 (NUCLEO-WL55JC1)
-  - Serial: 0026003A3234510A33353533
-- **Sensor**: BME688 (I2C 0x76/0x77)
-  - Temperature, Humidity, Pressure, Gas Resistance, IAQ
-  - Payload: ~12 bytes
-- **Display**: SH1106 OLED 128x64 (I2C 0x3C)
-  - Node ID, sensor readings, join status, RSSI/SNR
-- **Status**: To be configured next
+### LoRa-2 - BME680 Environmental Sensor ✅ OPERATIONAL
 
-### Gateway
+| Component | Specification |
+|-----------|---------------|
+| **MCU** | STM32WL55JC1 (Probe: 0026003A3234510A33353533) |
+| **Sensor** | BME680 (I2C 0x76) - Temp/Hum/Pressure/Gas |
+| **Display** | SH1106 OLED 128x64 (I2C 0x3C) |
+| **I2C Bus** | I2C2: PA12 (SCL), PA11 (SDA) |
+| **Radio** | Integrated SubGHz SX126x |
+| **DevEUI** | 24ce1bfeff091fac |
+| **Payload** | 12 bytes (temp + humidity + pressure + gas + padding) |
 
-- **Model**: RAK7268V2 WisGate Edge Lite 2
-- **Gateway EUI**: `ac1f09fffe1bce23`
-- **Channels**: 8-channel LoRaWAN concentrator (SX1302)
-- **Frequency**: AU915 Sub-band 2 (915.2-916.6 MHz)
-- **Network Server**: Built-in LoRa Server (NOT ChirpStack)
-- **Connectivity**: LAN + WiFi
-- **Status**: ✅ Configured and operational
-- **Documentation**: [docs/rak7268v2-config.md](docs/rak7268v2-config.md)
+**Current Readings**: ~28°C, 60% RH, 1020 hPa, 134 kOhm gas resistance
+**Uplink Interval**: ~30 seconds
 
----
+### Gateway - RAK7268V2 WisGate Edge Lite 2 ✅ OPERATIONAL
 
-## Pin Connections
-
-### STM32WL55JC1 - Node 1 (BME688)
-
-| Peripheral   | Pin      | Function  | Device                           |
-| ------------ | -------- | --------- | -------------------------------- |
-| I2C1 SDA     | PB9      | I2C Data  | BME688 (0x76/0x77) + OLED (0x3C) |
-| I2C1 SCL     | PB8      | I2C Clock | Shared bus                       |
-| SubGHz Radio | Internal | LoRaWAN   | 868/915 MHz                      |
-| VDD          | 3.3V     | Power     | All peripherals                  |
-| GND          | GND      | Ground    | All peripherals                  |
-
-### STM32WL55JC1 - Node 2 (SHT41)
-
-| Peripheral   | Pin      | Function  | Device                     |
-| ------------ | -------- | --------- | -------------------------- |
-| I2C1 SDA     | PB9      | I2C Data  | SHT41 (0x44) + OLED (0x3C) |
-| I2C1 SCL     | PB8      | I2C Clock | Shared bus                 |
-| SubGHz Radio | Internal | LoRaWAN   | 868/915 MHz                |
-| VDD          | 3.3V     | Power     | All peripherals            |
-| GND          | GND      | Ground    | All peripherals            |
+| Parameter | Value |
+|-----------|-------|
+| **Gateway EUI** | ac1f09fffe1bce23 |
+| **IP Address** | 10.10.10.254 |
+| **Region** | AU915 Sub-band 2 (915.2-916.6 MHz) |
+| **Network Server** | Built-in LoRa Server (NOT ChirpStack) |
+| **MQTT Broker** | 10.10.10.254:1883 (no auth) |
+| **Application** | "TOT" |
 
 ---
 
-## LoRaWAN Configuration
+## Data Pipeline
 
-### Network Parameters
+### End-to-End Flow
 
-- **Region**: AU915 (sub-band 2 for TTN compatibility)
-- **Activation**: OTAA (Over-The-Air Activation)
-- **Device Class**: Class A (bi-directional with scheduled RX windows)
-- **LoRaWAN Version**: 1.0.3
-- **Spreading Factor**: SF7-SF12 (adaptive)
-- **Duty Cycle**: Compliant with AU915 regulations
+```
+Sensor → STM32WL55 → LoRaWAN → RAK Gateway → MQTT → Python Bridge → InfluxDB → Grafana
+```
 
-### Device Registration (RAK Gateway)
+### Components
 
-Each node requires:
+1. **MQTT Bridge** ([mqtt_to_influx.py](mqtt_to_influx.py))
+   - Subscribes to gateway MQTT (10.10.10.254:1883)
+   - Decodes Base64 LoRaWAN payloads
+   - Writes to InfluxDB with tags (node, sensor, dev_eui)
 
-- **DevEUI**: Unique 64-bit identifier (from STM32WL)
-- **AppEUI**: Application identifier (from gateway application "TOT")
-- **AppKey**: 128-bit encryption key (from gateway application "TOT")
+2. **InfluxDB** (wk7-influxdb container)
+   - Bucket: `lorawan`
+   - Measurement: `lorawan_sensor`
+   - Fields: temperature, humidity, pressure, gas_resistance, rssi, snr
 
-**Pre-configured Device**:
-
-- DevEUI `23ce1bfeff091fac` already registered as "STM_Nodes" for LoRa-1
-- Auto-add enabled: new OTAA devices will be automatically registered
-- See [docs/rak7268v2-config.md](docs/rak7268v2-config.md) for credentials
+3. **Grafana Dashboard** (wk7-grafana container)
+   - URL: http://localhost:3000/d/lorawan-sensors/lorawan-sensor-network
+   - 10 panels: Temperature, Humidity, Pressure, Gas, RSSI, SNR, Stats
 
 ---
 
@@ -175,47 +131,28 @@ Each node requires:
 
 ```bash
 # Install probe-rs
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh | sh
 
-# Verify STM32WL55 support
-probe-rs chip list | grep STM32WL55
+# Add Rust embedded target
+rustup target add thumbv7em-none-eabihf
 ```
 
-### Build Firmware
+### Build and Flash
 
-**Node 1 (BME688):**
-
+**LoRa-1:**
 ```bash
 cd firmware/lora-1
-cargo build --release
+cargo run --release
 ```
 
-**Node 2 (SHT41):**
-
+**LoRa-2:**
 ```bash
 cd firmware/lora-2
-cargo build --release
+cargo run --release
 ```
 
-### Flash to Hardware
-
-**Node 1:**
-
-```bash
-cd firmware/lora-1
-probe-rs run --chip STM32WL55JCIx --release
-```
-
-**Node 2:**
-
-```bash
-cd firmware/lora-2
-probe-rs run --chip STM32WL55JCIx --release
-```
-
-### Monitor Logs
-
-**Using defmt-rtt:**
+### Monitor RTT Logs
 
 ```bash
 probe-rs attach --chip STM32WL55JCIx
@@ -223,220 +160,163 @@ probe-rs attach --chip STM32WL55JCIx
 
 ---
 
-## Gateway MQTT Integration
+## Running the Data Pipeline
 
-### MQTT Broker
-
-The RAK7268V2 runs a local MQTT broker at `127.0.0.1:1883` (on the gateway itself).
-
-**Subscribe to Device Messages:**
+### Start Infrastructure
 
 ```bash
-# Subscribe to all messages from the TOT application
-mosquitto_sub -h <gateway-ip> -t "application/TOT/device/#" -v
+# Start Week 7 services (InfluxDB + Grafana)
+cd ~/dev/4-month-plan/wk7-mqtt-influx
+docker compose up -d
 
-# Subscribe to specific device uplinks
-mosquitto_sub -h <gateway-ip> -t "application/TOT/device/23ce1bfeff091fac/rx" -v
-
-# Monitor gateway statistics
-mosquitto_sub -h <gateway-ip> -t "gateway/ac1f09fffe1bce23/stats" -v
+# Start MQTT bridge
+cd ~/dev/4-month-plan/wk10-lorawan
+docker compose up -d
 ```
 
-**MQTT Topics:**
+### Verify Data Flow
 
-- `application/TOT/device/23ce1bfeff091fac/join` - Join events
-- `application/TOT/device/23ce1bfeff091fac/rx` - Uplink data (Base64 encoded)
-- `application/TOT/device/23ce1bfeff091fac/ack` - Downlink acknowledgments
-- `application/TOT/device/23ce1bfeff091fac/status` - Device status updates
+```bash
+# Check MQTT bridge logs
+docker logs -f wk10-mqtt-bridge
 
-### Python Bridge to InfluxDB
+# Expected output:
+# [10:05:15] lora1: Temp=31.0C Hum=58.0% RSSI=-13 SNR=13.2 -> InfluxDB: OK
+# [10:05:51] lora2: Temp=28.0C Hum=60.0% Press=1020.0hPa Gas=135kOhm RSSI=-17 SNR=12.0 -> InfluxDB: OK
+```
 
-A Python service will subscribe to the gateway's MQTT topics and write decoded sensor data to InfluxDB for visualization in Grafana.
+### Access Dashboard
+
+- **Grafana**: http://localhost:3000 (admin/admin)
+- **Dashboard**: Dashboards → LoRaWAN Sensor Network
 
 ---
 
 ## Payload Encoding
 
-### Node 1 - BME688 (~12 bytes)
+### LoRa-1 (SHT41) - 4 bytes
 
-```
-Byte 0-3:   Temperature (f32, IEEE 754)
-Byte 4-7:   Humidity (f32, IEEE 754)
-Byte 8-9:   Pressure (u16, hPa * 10)
-Byte 10-11: Gas Resistance (u16, kΩ)
-```
+| Bytes | Type | Description | Decode |
+|-------|------|-------------|--------|
+| 0-1 | i16 BE | Temperature × 100 | `value / 100` = °C |
+| 2-3 | u16 BE | Humidity × 100 | `value / 100` = % |
 
-### Node 2 - SHT41 (~4 bytes)
+### LoRa-2 (BME680) - 12 bytes
 
-```
-Byte 0-1: Temperature (i16, °C * 100)
-Byte 2-3: Humidity (u16, % * 100)
-```
+| Bytes | Type | Description | Decode |
+|-------|------|-------------|--------|
+| 0-1 | i16 BE | Temperature × 100 | `value / 100` = °C |
+| 2-3 | u16 BE | Humidity × 100 | `value / 100` = % |
+| 4-5 | u16 BE | Pressure × 10 | `value / 10` = hPa |
+| 6-7 | u16 BE | Gas Resistance | kOhm |
+| 8-11 | - | Padding | (unused) |
 
----
-
-## Testing
-
-### Verify Gateway Connectivity
+### Decode Payloads
 
 ```bash
-# Check RAK7268V2 is reachable
-ping <gateway-ip>
-
-# Subscribe to gateway stats via MQTT
-mosquitto_sub -h <gateway-ip> -t "gateway/ac1f09fffe1bce23/stats" -v
-
-# SSH into gateway to check LoRa server
-ssh root@<gateway-ip>
-loraserver_status
+# Decode a Base64 payload
+python3 decode_payload.py CowZyA==
+# Output: Temp: 27.00°C, Humidity: 66.00%
 ```
 
-### Monitor Device Join
+---
 
-1. Power on STM32WL55 node
-2. Watch OLED display: "JOINING..." → "JOINED"
-3. Subscribe to join events:
-   ```bash
-   mosquitto_sub -h <gateway-ip> -t "application/TOT/device/+/join" -v
-   ```
-4. Check gateway web UI for device activity
+## MQTT Topics
 
-### Test Uplink Data
-
-1. Wait for first uplink (displayed on OLED)
-2. Subscribe to uplink messages:
-   ```bash
-   mosquitto_sub -h <gateway-ip> -t "application/TOT/device/23ce1bfeff091fac/rx" -v
-   ```
-3. Verify payload appears (Base64 encoded)
-4. Decode payload and confirm sensor data matches OLED display
-5. Check data appears in InfluxDB and Grafana dashboard
-
-### Range Testing
+Subscribe to gateway MQTT for debugging:
 
 ```bash
-# Indoor baseline: 50m minimum
-# Outdoor target: 500m+
-# Monitor RSSI/SNR on OLED display
+# All TOT application messages
+mosquitto_sub -h 10.10.10.254 -t "application/TOT/device/#" -v
+
+# LoRa-1 uplinks only
+mosquitto_sub -h 10.10.10.254 -t "application/TOT/device/23ce1bfeff091fac/rx" -v
+
+# LoRa-2 uplinks only
+mosquitto_sub -h 10.10.10.254 -t "application/TOT/device/24ce1bfeff091fac/rx" -v
+
+# Join events
+mosquitto_sub -h 10.10.10.254 -t "application/TOT/device/+/join" -v
 ```
-
----
-
-## Grafana Dashboard
-
-### 4-Node Unified View
-
-**Panels:**
-
-- **Node 1 (BME688)**: Temperature, Humidity, Pressure, Gas Resistance, IAQ
-- **Node 2 (SHT41)**: High-Precision Temperature, Humidity
-- **Node 3 (MODBUS_1)**: Temperature, Humidity (SHT3x)
-- **Node 4 (MODBUS_2)**: Temperature, Humidity (SHT3x)
-- **Comparison**: Temperature across all 4 nodes
-- **LoRaWAN Metrics**: RSSI, SNR, Spreading Factor, Duty Cycle
-
-**Access**: http://localhost:3000
-
----
-
-## Troubleshooting
-
-### Device Won't Join
-
-- Check DevEUI/AppEUI/AppKey match gateway configuration (see [docs/rak7268v2-config.md](docs/rak7268v2-config.md))
-- Verify AU915 sub-band 2 (915.2-916.6 MHz) configured on device
-- Check gateway is receiving packets: `mosquitto_sub -h <gateway-ip> -t "gateway/+/rx" -v`
-- SSH to gateway and check logs: `logread | grep lora`
-- Try different spreading factors (SF7-SF12)
-
-### No Uplink Data
-
-- Verify device shows "JOINED" status
-- Check duty cycle limits (wait 60+ seconds between uplinks)
-- Monitor LoRaWAN frame counter
-- Check payload encoding matches decoder
-
-### Poor RSSI/SNR
-
-- Test with line-of-sight to gateway
-- Try higher spreading factor (SF9, SF10)
-- Check antenna connections
-- Verify AU915 sub-band configuration
 
 ---
 
 ## Documentation
 
-- [TODO.md](TODO.md) - Development task tracking
-- [NOTES.md](NOTES.md) - Learning insights and design decisions
-- [HARDWARE_CONFIG.md](HARDWARE_CONFIG.md) - Complete hardware configuration (sensors, displays, I2C)
-- [docs/rak7268v2-config.md](docs/rak7268v2-config.md) - Gateway configuration and credentials
-- [docs/hardware-wiring.md](docs/hardware-wiring.md) - Detailed pin connections
-- [docs/architecture.md](docs/architecture.md) - System architecture design
-- [USERGUIDE.md](USERGUIDE.md) - Deployment and operation guide (TBD)
-
----
-
-## Key Learning Goals
-
-- STM32WL SubGHz radio peripheral programming
-- LoRaWAN OTAA join procedure and session key derivation
-- ChirpStack network server administration
-- Multi-protocol system integration (Ethernet + LoRaWAN)
-- LoRaWAN duty cycle compliance and regulations
-- Payload optimization for LPWAN networks
-- Embassy async framework for STM32WL
+| Document | Description |
+|----------|-------------|
+| [USERGUIDE.md](USERGUIDE.md) | Complete setup and operation guide |
+| [HARDWARE_CONFIG.md](HARDWARE_CONFIG.md) | Detailed hardware specifications |
+| [LORAWAN_CREDENTIALS.md](LORAWAN_CREDENTIALS.md) | Device credentials and EUIs |
+| [docs/rak7268v2-config.md](docs/rak7268v2-config.md) | Gateway configuration |
+| [TROUBLESHOOTING_WL55.md](TROUBLESHOOTING_WL55.md) | Common issues and solutions |
+| [CLAUDE.md](CLAUDE.md) | Development notes and constraints |
+| [NOTES.md](NOTES.md) | Technical learnings |
 
 ---
 
 ## Deliverables
 
-- [x] **Gateway Configuration Complete**
+### Gateway ✅ Complete
+- [x] RAK7268V2 deployed and configured (AU915 Sub-band 2)
+- [x] Built-in LoRa Server operational
+- [x] Application "TOT" created with OTAA credentials
+- [x] MQTT broker accessible at 10.10.10.254:1883
 
-  - [x] RAK7268V2 deployed and configured (AU915 Sub-band 2)
-  - [x] Built-in LoRa Server operational (NOT ChirpStack)
-  - [x] Application "TOT" created with OTAA credentials
-  - [x] Device "STM_Nodes" pre-registered (DevEUI: 23ce1bfeff091fac)
-  - [x] MQTT broker accessible at 127.0.0.1:1883 on gateway
-  - [x] Gateway configuration fully documented
+### LoRa-1 (SHT41) ✅ Complete
+- [x] STM32WL55 hardware integration
+- [x] SHT41 sensor reading (temperature, humidity)
+- [x] SSD1306 OLED display (TX count, readings, SNR/RSSI)
+- [x] LoRaWAN OTAA join
+- [x] Uplink transmission (~30 second interval)
+- [x] LED flash on transmission
 
-- [x] **LoRa-1 Hardware Complete**
+### LoRa-2 (BME680) ✅ Complete
+- [x] STM32WL55 hardware integration
+- [x] BME680 sensor reading (temp, humidity, pressure, gas)
+- [x] SH1106 OLED display (TX count, readings, SNR/RSSI)
+- [x] LoRaWAN OTAA join
+- [x] Uplink transmission (~30 second interval)
+- [x] LED flash on transmission
 
-  - [x] STM32WL55 board verified (Serial: 003E00463234510A33353533)
-  - [x] SHT41 sensor working (31°C, 57% RH)
-  - [x] SSD1306 OLED 128x32 displaying real-time data
-  - [x] I2C2 bus working (PA12/PA11)
-  - [x] Display updating every 2 seconds
-  - [x] Firmware renamed to lora-1
+### Data Pipeline ✅ Complete
+- [x] Python MQTT bridge subscribing to gateway
+- [x] Payload decoding (both node formats)
+- [x] InfluxDB bucket and data writes
+- [x] Grafana datasource configured
+- [x] Dashboard with 10 panels
 
-- [ ] **LoRa-1 LoRaWAN Implementation** (NEXT STEP)
-
-  - [ ] Add LoRaWAN library dependency
-  - [ ] Initialize STM32WL SubGHz radio
-  - [ ] Implement OTAA join with documented credentials
-  - [ ] Send sensor data uplinks
-  - [ ] Display join/TX status on OLED
-
-- [ ] **LoRa-2 Setup**
-
-  - [x] STM32WL55 board verified (Serial: 0026003A3234510A33353533)
-  - [ ] BME688 sensor integration
-  - [ ] SH1106 OLED 128x64 integration
-  - [ ] LoRaWAN implementation
-
-- [ ] **Backend Integration**
-
-  - [ ] Python MQTT bridge to decode payloads
-  - [ ] InfluxDB integration
-  - [ ] Unified 4-node Grafana dashboard
-
-- [x] **Documentation**
-  - [x] Hardware configuration documented (HARDWARE_CONFIG.md)
-  - [x] Gateway config documented (docs/rak7268v2-config.md)
-  - [x] Development notes with technical learnings (NOTES.md)
-  - [ ] Performance metrics report
+### Documentation ✅ Complete
+- [x] USERGUIDE.md - Comprehensive deployment guide
+- [x] Hardware configuration documented
+- [x] Gateway configuration documented
+- [x] Troubleshooting guide
 
 ---
 
-**Status**: 🚧 In Progress - Sensor integration complete, LoRaWAN next
-**Last Updated**: 2026-01-08
+## Key Learnings
+
+1. **LoRaWAN Byte Order**: EUIs must be reversed (little-endian) in firmware
+2. **No FPU**: STM32WL55 requires integer-only math
+3. **SHT41 Wake-up**: Sensor needs measurement command before I2C scan
+4. **MQTT 3.1 Protocol**: RAK gateway requires older MQTT protocol version
+5. **Peripheral Stealing**: Embassy async pattern for I2C sharing
+
+---
+
+## Performance Metrics
+
+| Metric | Value |
+|--------|-------|
+| Join Time | ~7 seconds |
+| Uplink Interval | ~30 seconds |
+| LoRa-1 Payload | 4 bytes |
+| LoRa-2 Payload | 12 bytes |
+| Typical RSSI | -15 to -80 dBm |
+| Typical SNR | -10 to +14 dB |
+| End-to-End Latency | <2 seconds |
+
+---
+
+**Status**: ✅ Week 10 Complete
+**Last Updated**: 2026-01-09

@@ -1,191 +1,182 @@
-# Week 10: LoRaWAN Migration - TODO
+# Week 10: LoRaWAN Sensor Network - TODO
 
+> **Status**: ✅ **COMPLETE** - Both nodes operational, full data pipeline live
 > **See also**: `../DOCS/PLAN_WEEKLY.md` for complete week-by-week breakdown
 
 ## Project Status
+
 - **Start Date**: Week 10 (Phase 3)
 - **Hardware**: 2x NUCLEO-WL55JC1 (STM32WL with integrated LoRaWAN)
-- **Gateway**: RAK7268V2 WisGate Edge Lite 2 (AU915, LAN + WiFi)
-- **Sensors**: BME688 (Node 1), SHT41 (Node 2)
-- **Display**: SSD1306 OLED 128x64 (I2C) on both boards
-- **Status**: 📋 **STARTING - Hardware arriving Monday**
+- **Gateway**: RAK7268V2 WisGate Edge Lite 2 (AU915, Built-in LoRa Server)
+- **Sensors**: SHT41 (LoRa-1), BME680 (LoRa-2)
+- **Displays**: SSD1306 128x32 (LoRa-1), SH1106 128x64 (LoRa-2)
+- **Status**: ✅ **COMPLETE**
 
 ## Hardware Inventory
-- [x] RAK7268V2 LoRaWAN gateway (already configured, AU915)
-- [ ] 2x NUCLEO-WL55JC1 boards (arriving Monday)
-- [ ] 1x BME688 sensor (AI environmental)
-- [ ] 1x SHT41 sensor (high-precision temp/humidity)
-- [ ] 2x SSD1306 OLED displays (from previous weeks)
-- [ ] Breadboards, jumper wires
 
-## Day 1: RAK7268V2 Gateway & ChirpStack Setup
-- [x] RAK7268V2 powered and configured (LAN + WiFi, AU915) - COMPLETE
-- [ ] Verify RAK7268V2 accessible from desktop via LAN
-- [ ] Install ChirpStack via Docker Compose on desktop
-- [ ] Configure ChirpStack region (AU915 to match gateway)
-- [ ] Register RAK7268V2 in ChirpStack (EUI-64, name, location)
-- [ ] Verify packet forwarder connectivity in ChirpStack dashboard
-- [ ] Create LoRaWAN device profile (Class A, OTAA, LoRaWAN 1.0.3)
-- [ ] Document ChirpStack installation in docs/chirpstack-setup.md
+- [x] RAK7268V2 LoRaWAN gateway (configured, AU915 Sub-band 2)
+- [x] 2x NUCLEO-WL55JC1 boards
+- [x] 1x BME680 sensor (on LoRa-2)
+- [x] 1x SHT41 sensor (on LoRa-1)
+- [x] 1x SSD1306 OLED 128x32 (LoRa-1)
+- [x] 1x SH1106 OLED 128x64 (LoRa-2)
+- [x] Breadboards, jumper wires
 
-## Day 2: STM32WL55 Development Environment & Sensor Integration
-- [x] Unbox and inventory 2x NUCLEO-WL55JC1 boards
-- [x] Set up STM32WL55 development environment
-  - [x] Install probe-rs support for STM32WL55JC
-  - [x] Test probe connection and chip detection
-  - [x] Set up .cargo/config.toml for WL55
-  - [x] Configure memory.x for STM32WL55JC (256KB Flash, 64KB RAM)
-- [x] **Board 1 (NODE_1)**: Wire SHT41 (I2C 0x44) + SH1106 OLED (I2C 0x3C) via breadboard
-- [ ] **Board 2 (NODE_2)**: Wire BME688 (I2C 0x76/0x77) + OLED (I2C 0x3C)
-- [x] Test sensor communication on NODE_1 (SHT41 working at 27°C, 60% RH)
-- [x] Display sensor readings on NODE_1 OLED (real-time updates every 2s)
-- [x] Document hardware wiring in docs/hardware-wiring.md
+## Day 1-2: Gateway & Hardware Setup ✅ COMPLETE
 
-**Note**: NODE_1 configured with SHT41 (not BME688 as originally planned) for initial testing
+- [x] RAK7268V2 powered and configured (AU915 Sub-band 2)
+- [x] Built-in LoRa Server operational (NOT ChirpStack)
+- [x] Application "TOT" created with OTAA credentials
+- [x] MQTT broker accessible at 10.10.10.254:1883
+- [x] Both NUCLEO-WL55JC1 boards tested
+- [x] probe-rs flashing and debugging operational
+- [x] Embassy async framework verified
 
-## Day 3: LoRaWAN OTAA Implementation (Board 1 - BME688)
-- [ ] Study STM32WL LoRaWAN examples and HAL
-- [ ] Configure LoRaWAN parameters (DevEUI, AppEUI, AppKey)
-- [ ] Register device in ChirpStack application
-- [ ] Implement OTAA join procedure using STM32WL radio
-- [ ] Handle join-accept and derive session keys
-- [ ] Verify successful join in ChirpStack device logs
-- [ ] Display join status on OLED ("JOINING...", "JOINED")
-- [ ] Add LED indicator for join status
+## Day 3: LoRa-1 Implementation ✅ COMPLETE
 
-## Day 4: LoRaWAN Uplink Messages & Sensor Data (Board 1 - BME688)
-- [ ] Implement unconfirmed uplink messages (Class A)
-- [ ] Encode BME688 sensor data (temp, humidity, pressure, gas, IAQ) - ~12 bytes
-- [ ] Add frame counter management and encryption
-- [ ] Configure uplink interval (e.g., 60 seconds)
-- [ ] Respect AU915 duty cycle limits
-- [ ] Verify uplink messages in ChirpStack (payload decoding)
-- [ ] Test sensor data visualization in ChirpStack
-- [ ] Create payload decoder function in ChirpStack
+- [x] SHT41 sensor integration (I2C 0x44)
+- [x] SSD1306 OLED display (I2C 0x3C)
+- [x] LoRaWAN OTAA join successful (DevEUI: 23ce1bfeff091fac)
+- [x] Uplinks transmitting every ~30 seconds
+- [x] 4-byte payload encoding (temp + humidity)
+- [x] Display showing TX count, readings, SNR/RSSI
+- [x] LED flash on transmission
 
-## Day 5: MQTT Integration & Second Device (Board 2 - SHT41)
-- [ ] Configure ChirpStack MQTT integration
-- [ ] Subscribe to LoRaWAN device data on MQTT broker (Mosquitto)
-- [ ] Create Python/Rust MQTT subscriber script
-- [ ] Parse LoRaWAN JSON payload and write to InfluxDB
-- [ ] Adapt firmware for Board 2 (SHT41 sensor, unique DevEUI)
-- [ ] Encode SHT41 sensor data (temp, humidity) - ~4 bytes payload
-- [ ] Register Board 2 in ChirpStack
-- [ ] Test both devices sending data to InfluxDB
-- [ ] Verify data flow: WL55 → RAK7268V2 → ChirpStack → MQTT → InfluxDB
+## Day 4: LoRa-2 Implementation ✅ COMPLETE
 
-## Day 6: Unified Grafana Dashboard (4 Nodes)
-- [ ] Create Grafana dashboard for 2x LoRaWAN nodes
-- [ ] **Node 1 (BME688)**: Temp, humidity, pressure, gas resistance, IAQ panels
-- [ ] **Node 2 (SHT41)**: High-precision temp, humidity panels
-- [ ] Integrate with existing Week 9 Modbus nodes (10.10.10.100, 10.10.10.200)
-- [ ] Unified view: 2x Modbus (SHT3x) + 2x LoRaWAN (BME688 + SHT41)
-- [ ] Create comparison panels (temperature/humidity across all 4 nodes)
-- [ ] Add LoRaWAN-specific metrics (RSSI, SNR, spreading factor, duty cycle)
-- [ ] Document multi-protocol architecture in docs/architecture.md
+- [x] BME680 sensor integration (I2C 0x76)
+- [x] SH1106 OLED display (I2C 0x3C)
+- [x] LoRaWAN OTAA join successful (DevEUI: 24ce1bfeff091fac)
+- [x] Uplinks transmitting every ~30 seconds
+- [x] 12-byte payload encoding (temp + hum + pressure + gas)
+- [x] Display showing TX count, readings, SNR/RSSI
+- [x] LED flash on transmission
 
-## Day 7: Testing, Documentation & Weekly Review
-- [ ] End-to-end testing: All 4 nodes reporting to Grafana
-- [ ] Performance measurement: latency, RSSI/SNR, uplink success rate
-- [ ] Range testing with LoRaWAN (indoor, outdoor)
-- [ ] Create RAK7268V2 deployment guide
-- [ ] Document STM32WL55 LoRaWAN implementation
-- [ ] Write architecture document (Modbus + LoRaWAN + OPC-UA)
-- [ ] Update README with complete system architecture
-- [ ] Export Grafana dashboards as JSON
-- [ ] Weekly review and plan Week 11
+## Day 5: Data Pipeline ✅ COMPLETE
 
-## Implementation: STM32WL55 LoRaWAN Stack
+- [x] Python MQTT bridge created (mqtt_to_influx.py)
+- [x] Subscribe to gateway MQTT (10.10.10.254:1883)
+- [x] Decode Base64 payloads (both 4-byte and 12-byte formats)
+- [x] Write to InfluxDB (bucket: lorawan)
+- [x] Docker Compose configuration for bridge container
+- [x] End-to-end data flow verified
 
-### Node 1 (BME688) - firmware/lora-1/
-- [ ] Create Cargo project for STM32WL55JC
-- [ ] Add dependencies (embassy-stm32, lorawan stack)
-- [ ] Initialize STM32WL SubGHz radio peripheral
-- [ ] Implement OTAA join sequence
-- [ ] Add BME688 sensor driver (I2C)
-- [ ] Add OLED display driver (I2C)
-- [ ] Implement uplink transmission loop
-- [ ] Add error handling and retry logic
-- [ ] Test indoor range (target: 50m minimum)
+## Day 6: Grafana Dashboard ✅ COMPLETE
 
-### Node 2 (SHT41) - firmware/lora-2/
-- [ ] Clone Node 1 firmware structure
-- [ ] Replace BME688 with SHT41 sensor driver
-- [ ] Update DevEUI (unique identifier)
-- [ ] Adjust payload encoding (4 bytes vs 12 bytes)
-- [ ] Test dual-node coexistence
-- [ ] Verify both nodes join successfully
+- [x] InfluxDB datasource configured
+- [x] Dashboard created with 10 panels:
+  - [x] Temperature (both nodes)
+  - [x] Humidity (both nodes)
+  - [x] Pressure (LoRa-2 only)
+  - [x] Gas Resistance (LoRa-2 only)
+  - [x] RSSI (both nodes)
+  - [x] SNR (both nodes)
+  - [x] Stat panels (latest values)
+- [x] Dashboard JSON exported (grafana/lorawan-dashboard.json)
 
-## Gateway Service - gateway/lorawan_mqtt_bridge.py
-- [ ] Create Python script for MQTT subscription
-- [ ] Subscribe to ChirpStack MQTT topics:
-  - [ ] application/+/device/+/event/up (uplink data)
-  - [ ] application/+/device/+/event/join (join events)
-  - [ ] application/+/device/+/event/status (status events)
-- [ ] Parse JSON payload from ChirpStack
-- [ ] Decode LoRaWAN payload (BME688, SHT41)
-- [ ] Write decoded data to InfluxDB (dual-write pattern)
-- [ ] Add error handling and reconnection logic
-- [ ] Document MQTT topic structure
+## Day 7: Documentation ✅ COMPLETE
 
-## Testing: LoRaWAN Connectivity
-- [ ] Verify RAK7268V2 receives packets (gateway logs)
-- [ ] Check ChirpStack device logs (join, uplinks)
-- [ ] Monitor LoRaWAN metrics (RSSI, SNR, SF)
-- [ ] Test different spreading factors (SF7, SF9, SF12)
-- [ ] Measure latency (sensor → Grafana)
-- [ ] Test range at different locations
-- [ ] Verify duty cycle compliance (AU915 regulations)
+- [x] README.md - Complete system overview with architecture diagram
+- [x] USERGUIDE.md - Comprehensive deployment guide (857 lines)
+- [x] HARDWARE_CONFIG.md - Hardware specifications
+- [x] LORAWAN_CREDENTIALS.md - Device credentials
+- [x] docs/rak7268v2-config.md - Gateway configuration
+- [x] TROUBLESHOOTING_WL55.md - Common issues and solutions
+- [x] CLAUDE.md - Development guidance
+- [x] NOTES.md - Technical learnings
+- [x] STATUS.md - Current status summary
+- [x] IMPLEMENTATION_SUMMARY.md - Implementation details
 
-## Testing: Multi-Protocol System
-- [ ] All 4 nodes visible in Grafana
-- [ ] Temperature comparison across nodes
-- [ ] Humidity comparison across nodes
-- [ ] Verify data freshness (timestamps)
-- [ ] Test system with 1 node offline
-- [ ] Test system with gateway offline
-- [ ] Recovery testing (reconnection, rejoin)
+## Firmware Implementation ✅ COMPLETE
 
-## Documentation
-- [ ] README.md - System overview, quick start
-- [ ] docs/hardware-wiring.md - Pin connections for both boards
-- [ ] docs/chirpstack-setup.md - ChirpStack installation guide
-- [ ] docs/architecture.md - Multi-protocol system design
-- [ ] NOTES.md - Development log, learning insights
-- [ ] USERGUIDE.md - Deployment and operation guide
+### LoRa-1 (firmware/lora-1/) ✅
 
-## Deliverables
-- [x] RAK7268V2 LoRaWAN gateway deployed (AU915) - COMPLETE
-- [ ] ChirpStack network server operational
-- [ ] 2x STM32WL55 LoRaWAN devices (OTAA, Class A)
-- [ ] MQTT integration to InfluxDB
-- [ ] Unified 4-node Grafana dashboard
-- [ ] Complete documentation set
-- [ ] Architecture diagrams
-- [ ] Performance metrics report
+- [x] Embassy async framework
+- [x] STM32WL SubGHz radio initialization
+- [x] lora-phy v3.0 driver
+- [x] lorawan-device v0.12 MAC layer
+- [x] OTAA join procedure
+- [x] SHT41 sensor driver (integer math only)
+- [x] SSD1306 display driver
+- [x] Uplink transmission loop
+- [x] SNR/RSSI tracking and display
 
-## Stretch Goals (Optional)
+### LoRa-2 (firmware/lora-2/) ✅
+
+- [x] Embassy async framework
+- [x] STM32WL SubGHz radio initialization
+- [x] lora-phy v3.0 driver
+- [x] lorawan-device v0.12 MAC layer
+- [x] OTAA join procedure
+- [x] BME680 sensor driver (integer math only)
+- [x] SH1106 display driver
+- [x] Uplink transmission loop (12-byte payload)
+- [x] SNR/RSSI tracking and display
+
+## Data Pipeline ✅ COMPLETE
+
+### MQTT Bridge (mqtt_to_influx.py) ✅
+
+- [x] Subscribe to gateway MQTT topics
+- [x] Parse JSON payload from gateway
+- [x] Decode LoRaWAN payload (4-byte and 12-byte formats)
+- [x] Write decoded data to InfluxDB
+- [x] Docker container configuration
+
+## Testing ✅ COMPLETE
+
+### LoRaWAN Connectivity ✅
+
+- [x] Both nodes join successfully
+- [x] Uplinks received by gateway
+- [x] RSSI: -13 to -80 dBm (typical)
+- [x] SNR: 10-13 dB (typical)
+- [x] End-to-end latency: <2 seconds
+
+### Data Pipeline ✅
+
+- [x] MQTT messages received from gateway
+- [x] Payloads decoded correctly
+- [x] Data written to InfluxDB
+- [x] Grafana displays real-time data
+
+## Deliverables ✅ ALL COMPLETE
+
+- [x] RAK7268V2 LoRaWAN gateway deployed (AU915)
+- [x] Built-in LoRa Server operational
+- [x] 2x STM32WL55 LoRaWAN devices (OTAA, Class A)
+- [x] Python MQTT bridge to InfluxDB
+- [x] Grafana dashboard with 10 panels
+- [x] Complete documentation set
+- [x] USERGUIDE.md deployment guide
+
+## Stretch Goals (Future Work)
+
 - [ ] Implement downlink messages (Class A confirmed messages)
 - [ ] Add adaptive data rate (ADR) support
-- [ ] Implement Class C device mode (always listening)
-- [ ] Add GPS coordinates to payload (if available)
-- [ ] Implement firmware update over LoRaWAN
-- [ ] Add battery voltage monitoring
 - [ ] Implement low-power sleep mode
+- [ ] Add battery voltage monitoring
+- [ ] Integrate with Week 9 Modbus nodes (unified 4-node system)
+- [ ] Range testing at various distances
+
+## Key Learnings
+
+1. **LoRaWAN byte order** - EUIs must be reversed (little-endian) in firmware
+2. **No FPU** - STM32WL55 requires integer-only math
+3. **SHT41 wake-up** - Sensor needs measurement command before I2C scan
+4. **MQTT 3.1** - RAK gateway requires older protocol version
+5. **Embassy async** - Peripheral stealing pattern for I2C sharing
 
 ## Notes
-- Using native STM32WL LoRaWAN stack (not RYLR998 modules)
-- AU915 frequency plan (Australia/NZ region)
-- Class A device (bi-directional with scheduled uplinks)
-- OTAA activation (more secure than ABP)
-- One sensor per board for simplicity
-- Spare sensors available for future experiments
-- Embassy async/await framework for consistency
 
-## Key Learning Goals
-- STM32WL native LoRaWAN stack
-- LoRaWAN OTAA join procedure
-- ChirpStack network server administration
-- Multi-protocol system integration (Ethernet + LoRaWAN)
-- LoRaWAN duty cycle and regulations
-- Payload optimization for LPWAN
+- Using native STM32WL LoRaWAN stack via lora-phy + lorawan-device
+- AU915 Sub-band 2 frequency plan (915.2-916.6 MHz)
+- Class A device (bi-directional with scheduled uplinks)
+- OTAA activation (secure key derivation)
+- Embassy async/await framework for consistency
+- Gateway uses built-in LoRa Server (NOT ChirpStack)
+
+---
+
+**Status**: ✅ Week 10 Complete
+**Last Updated**: 2026-01-09

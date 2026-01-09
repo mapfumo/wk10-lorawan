@@ -1,582 +1,857 @@
-# Week 10: LoRaWAN System - User Guide
+# LoRaWAN Sensor Network - User Guide
 
-**Target Audience**: Deployment engineers, system operators
-**Prerequisites**: Linux desktop, Docker, basic networking knowledge
-**Last Updated**: 2026-01-03
+A complete guide to setting up and running a 2-node LoRaWAN sensor network using STM32WL55 microcontrollers, RAK7268V2 gateway, and a Grafana visualization dashboard.
 
 ---
 
 ## Table of Contents
 
-1. [System Overview](#system-overview)
-2. [Hardware Setup](#hardware-setup)
-3. [ChirpStack Installation](#chirpstack-installation)
-4. [Device Provisioning](#device-provisioning)
-5. [Gateway Service Setup](#gateway-service-setup)
-6. [Monitoring and Dashboards](#monitoring-and-dashboards)
-7. [Troubleshooting](#troubleshooting)
-8. [Maintenance](#maintenance)
+1. [Project Overview](#project-overview)
+2. [System Architecture](#system-architecture)
+3. [Prerequisites](#prerequisites)
+4. [Hardware Setup](#hardware-setup)
+5. [Firmware Setup](#firmware-setup)
+6. [Gateway Configuration](#gateway-configuration)
+7. [Data Pipeline Setup](#data-pipeline-setup)
+8. [Docker Services](#docker-services)
+9. [Grafana Dashboard](#grafana-dashboard)
+10. [Troubleshooting](#troubleshooting)
+11. [Quick Reference](#quick-reference)
 
 ---
 
-## System Overview
+## Project Overview
 
-This system combines 4 sensor nodes in a unified monitoring platform:
-- **2x Modbus TCP nodes** (Week 9): Ethernet-connected F446RE boards
-- **2x LoRaWAN nodes** (Week 10): Wireless STM32WL55 boards
+This project creates a LoRaWAN sensor network with:
 
-All data flows through MQTT → InfluxDB → Grafana for visualization.
+- **2 STM32WL55 sensor nodes** transmitting environmental data
+- **RAK7268V2 LoRaWAN gateway** receiving and forwarding data
+- **Python MQTT bridge** decoding payloads and storing in InfluxDB
+- **Grafana dashboard** for real-time visualization
 
-### System Requirements
+### What Each Node Measures
 
-**Hardware**:
-- 2x NUCLEO-WL55JC1 boards (flashed with firmware)
-- RAK7268V2 LoRaWAN gateway (configured for AU915)
-- Ethernet switch/router (for gateway connectivity)
-- Linux desktop (Ubuntu/Pop!_OS recommended)
+| Node | Sensor | Measurements |
+|------|--------|--------------|
+| LoRa-1 | SHT41 | Temperature, Humidity |
+| LoRa-2 | BME680 | Temperature, Humidity, Pressure, Gas Resistance |
 
-**Software**:
-- Docker & Docker Compose
-- Python 3.8+
-- Mosquitto MQTT broker
-- InfluxDB 2.x
-- Grafana 12.x
-- ChirpStack network server
+---
+
+## System Architecture
+
+### Network Topology
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              YOUR NETWORK                                    │
+│                                                                             │
+│  ┌──────────────┐     LoRaWAN      ┌──────────────┐                        │
+│  │   LoRa-1     │    (915 MHz)     │  RAK7268V2   │                        │
+│  │  STM32WL55   │ ─────────────────│   Gateway    │                        │
+│  │   + SHT41    │                  │              │                        │
+│  │  (Temp/Hum)  │                  │ 10.10.10.254 │                        │
+│  └──────────────┘                  │              │                        │
+│                                    │   MQTT       │                        │
+│  ┌──────────────┐                  │   Broker     │                        │
+│  │   LoRa-2     │ ─────────────────│   :1883      │                        │
+│  │  STM32WL55   │                  └──────┬───────┘                        │
+│  │   + BME680   │                         │                                │
+│  │ (Temp/Hum/   │                         │ MQTT (TCP)                     │
+│  │  Press/Gas)  │                         │                                │
+│  └──────────────┘                         ▼                                │
+│                                    ┌──────────────┐                        │
+│                                    │ Your Computer│                        │
+│                                    │  (Docker)    │                        │
+│                                    └──────────────┘                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+```
+┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌──────────┐    ┌─────────┐
+│ Sensor  │───▶│ STM32WL │───▶│  RAK7268V2  │───▶│  MQTT    │───▶│InfluxDB │
+│ Reading │    │  Radio  │    │   Gateway   │    │  Bridge  │    │         │
+└─────────┘    └─────────┘    └─────────────┘    └──────────┘    └────┬────┘
+                                                                      │
+                                                                      ▼
+                                                                ┌─────────┐
+                                                                │ Grafana │
+                                                                │Dashboard│
+                                                                └─────────┘
+```
+
+### Docker Container Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Docker Network: iiot-network                     │
+│                                                                         │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐         │
+│  │  wk10-mqtt-     │  │  wk7-influxdb   │  │  wk7-grafana    │         │
+│  │    bridge       │  │                 │  │                 │         │
+│  │                 │  │                 │  │                 │         │
+│  │ Python script   │─▶│  Time-series    │─▶│  Visualization  │         │
+│  │ decodes MQTT    │  │  database       │  │  dashboard      │         │
+│  │ payloads        │  │                 │  │                 │         │
+│  │                 │  │  Port: 8086     │  │  Port: 3000     │         │
+│  └────────┬────────┘  └─────────────────┘  └─────────────────┘         │
+│           │                                                             │
+│           │ Connects to external MQTT                                   │
+└───────────┼─────────────────────────────────────────────────────────────┘
+            │
+            ▼
+    ┌───────────────┐
+    │  RAK Gateway  │
+    │  MQTT Broker  │
+    │ 10.10.10.254  │
+    │    :1883      │
+    └───────────────┘
+```
+
+---
+
+## Prerequisites
+
+### Software Requirements
+
+| Software | Version | Purpose |
+|----------|---------|---------|
+| Docker | 20.10+ | Container runtime |
+| Docker Compose | 2.0+ | Multi-container orchestration |
+| Rust | 1.70+ | Firmware compilation |
+| probe-rs | Latest | Firmware flashing |
+
+### Install Docker (Ubuntu/Debian)
+
+```bash
+# Update package index
+sudo apt update
+
+# Install Docker
+sudo apt install docker.io docker-compose-plugin
+
+# Add your user to docker group (logout/login required)
+sudo usermod -aG docker $USER
+
+# Verify installation
+docker --version
+docker compose version
+```
+
+### Install Rust Toolchain
+
+```bash
+# Install Rust via rustup
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Source the environment (or restart terminal)
+source ~/.cargo/env
+
+# Add embedded target for STM32WL55
+rustup target add thumbv7em-none-eabihf
+
+# Verify
+rustc --version
+```
+
+### Install probe-rs (Firmware Flashing Tool)
+
+```bash
+# Install probe-rs
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh | sh
+
+# Verify installation
+probe-rs --version
+```
+
+### Hardware Requirements
+
+| Item | Quantity | Notes |
+|------|----------|-------|
+| STM32WL55 Nucleo Board | 2 | NUCLEO-WL55JC1 or similar |
+| SHT41 Sensor | 1 | I2C temperature/humidity |
+| BME680 Sensor | 1 | I2C environmental sensor |
+| SSD1306 OLED (128x32) | 1 | For LoRa-1 display |
+| SH1106 OLED (128x64) | 1 | For LoRa-2 display |
+| RAK7268V2 Gateway | 1 | Or compatible LoRaWAN gateway |
+| USB Cables | 2 | For programming/power |
 
 ---
 
 ## Hardware Setup
 
-### RAK7268V2 Gateway Configuration
+### LoRa-1 Wiring (SHT41 + SSD1306)
 
-**Step 1: Physical Setup**
-1. Connect RAK7268V2 to power (PoE or DC adapter)
-2. Connect Ethernet cable to LAN port
-3. Wait for gateway to boot (~60 seconds)
-
-**Step 2: Verify Network Connectivity**
-```bash
-# Find gateway IP (check your router's DHCP table)
-# Or use the default: 192.168.230.1
-
-ping <gateway-ip>
+```
+STM32WL55 Nucleo          SHT41 Sensor       SSD1306 OLED
+─────────────────         ────────────       ────────────
+PA12 (I2C2_SCL)  ─────────  SCL  ────────────  SCL
+PA11 (I2C2_SDA)  ─────────  SDA  ────────────  SDA
+3.3V             ─────────  VCC  ────────────  VCC
+GND              ─────────  GND  ────────────  GND
 ```
 
-**Step 3: Access Gateway Web UI**
-1. Open browser: `http://<gateway-ip>`
-2. Login with credentials (default: root/root)
-3. Verify LoRa configuration:
-   - **Region**: AU915
-   - **Network Server**: ChirpStack (to be configured)
-   - **Packet Forwarder**: UDP (default)
+**I2C Addresses:**
+- SHT41: `0x44`
+- SSD1306: `0x3C`
 
-### STM32WL55 Node Setup
+### LoRa-2 Wiring (BME680 + SH1106)
 
-**Node 1 (BME688)**:
-1. Wire BME688 sensor to I2C1 (PB8/PB9)
-2. Wire OLED display to I2C1 (shared bus)
-3. Connect ST-Link debugger
-4. Flash firmware: `probe-rs run --chip STM32WL55JCIx --release`
-5. Verify OLED shows: "WL55-BME688" + "JOINING..."
+```
+STM32WL55 Nucleo          BME680 Sensor      SH1106 OLED
+─────────────────         ─────────────      ───────────
+PA12 (I2C2_SCL)  ─────────  SCL  ────────────  SCL
+PA11 (I2C2_SDA)  ─────────  SDA  ────────────  SDA
+3.3V             ─────────  VCC  ────────────  VCC
+GND              ─────────  GND  ────────────  GND
+```
 
-**Node 2 (SHT41)**:
-1. Wire SHT41 sensor to I2C1 (PB8/PB9)
-2. Wire OLED display to I2C1 (shared bus)
-3. Connect ST-Link debugger
-4. Flash firmware: `probe-rs run --chip STM32WL55JCIx --release`
-5. Verify OLED shows: "WL55-SHT41" + "JOINING..."
+**I2C Addresses:**
+- BME680: `0x76` or `0x77`
+- SH1106: `0x3C`
+
+### Identifying Your Boards
+
+Each STM32WL55 Nucleo has a unique probe serial number. List connected probes:
+
+```bash
+probe-rs list
+```
+
+Example output:
+```
+The following debug probes were found:
+[0]: STLink V3 -- 0483:374e:003E00463234510A33353533 (ST-LINK)
+[1]: STLink V3 -- 0483:374e:0026003A3234510A33353533 (ST-LINK)
+```
+
+**Board Assignment (this project):**
+| Node | Probe Serial |
+|------|--------------|
+| LoRa-1 | `003E00463234510A33353533` |
+| LoRa-2 | `0026003A3234510A33353533` |
 
 ---
 
-## ChirpStack Installation
+## Firmware Setup
 
-### Using Docker Compose
+### Project Structure
 
-**Step 1: Clone ChirpStack Docker Repository**
+```
+wk10-lorawan/
+├── firmware/
+│   ├── lora-1/          # LoRa-1 firmware (SHT41)
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       └── main.rs
+│   └── lora-2/          # LoRa-2 firmware (BME680)
+│       ├── Cargo.toml
+│       └── src/
+│           └── main.rs
+├── lora-phy-patched/    # Patched LoRa PHY library
+├── lorawan-device-patched/  # Patched LoRaWAN library
+└── ...
+```
+
+### Building Firmware
+
+**LoRa-1:**
 ```bash
-cd ~/dev
-git clone https://github.com/chirpstack/chirpstack-docker.git
-cd chirpstack-docker
+cd firmware/lora-1
+
+# Debug build
+cargo build
+
+# Release build (smaller, optimized)
+cargo build --release
 ```
 
-**Step 2: Configure Region (AU915)**
+**LoRa-2:**
 ```bash
-# Edit AU915 configuration
-nano configuration/chirpstack/region_au915_0.toml
+cd firmware/lora-2
+cargo build --release
 ```
 
-Ensure these settings:
-```toml
-[gateway]
-enabled = true
+### Flashing Firmware
 
-[network]
-enabled = true
-net_id = "000000"
-
-[[regions]]
-id = "au915_0"
-common_name = "AU915"
-```
-
-**Step 3: Start ChirpStack Services**
+**LoRa-1 (auto-detect probe):**
 ```bash
-docker-compose up -d
+cd firmware/lora-1
+
+# Build, flash, and attach RTT logs
+cargo run --release
 ```
 
-**Step 4: Verify Services Running**
+**LoRa-2 (explicit probe):**
 ```bash
-docker-compose ps
+cd firmware/lora-2
 
-# Expected output:
-# chirpstack-network-server  (port 8000)
-# chirpstack-application-server (port 8080)
-# chirpstack-gateway-bridge (port 1700/udp)
-# postgresql (port 5432)
-# redis (port 6379)
-# mosquitto (port 1883)
+# If multiple probes connected, specify which one
+probe-rs run --chip STM32WL55JCIx \
+  --probe 0483:374e:0026003A3234510A33353533 \
+  target/thumbv7em-none-eabihf/release/lora-2
 ```
 
-**Step 5: Access Web UI**
-1. Open browser: `http://localhost:8080`
-2. Login:
-   - **Username**: admin
-   - **Password**: admin
-3. Change password on first login
+### Viewing Debug Logs
 
----
+Once flashed, RTT (Real-Time Transfer) logs appear in your terminal:
 
-## Device Provisioning
-
-### Gateway Registration
-
-**Step 1: Add Gateway in ChirpStack**
-1. Navigate to: **Gateways** → **Add Gateway**
-2. Fill details:
-   - **Name**: RAK7268V2-AU915
-   - **Gateway ID**: (from RAK gateway - 8 byte EUI)
-   - **Network Server**: default
-   - **Service Profile**: default
-3. Click **Add Gateway**
-
-**Step 2: Configure RAK7268V2 to Use ChirpStack**
-1. Access RAK gateway web UI
-2. Navigate to: **LoRa** → **Packet Forwarder**
-3. Set server address:
-   - **Server Address**: `<desktop-ip>` (ChirpStack host)
-   - **Server Port**: 1700 (UDP)
-   - **Protocol**: Semtech UDP
-4. Click **Save & Apply**
-5. Verify in ChirpStack: Gateway shows "Last Seen" timestamp
-
-### Device Profile Creation
-
-**Step 1: Create Device Profile**
-1. Navigate to: **Device Profiles** → **Create**
-2. Configure:
-   - **Name**: STM32WL55-ClassA-OTAA
-   - **LoRaWAN MAC Version**: 1.0.3
-   - **Regional Parameters**: A
-   - **Max EIRP**: 30 (for AU915)
-   - **Uplink Interval**: 60 seconds
-3. **Join (OTAA/ABP)**:
-   - Select: **Device supports OTAA**
-4. **Class-B/C**: Leave disabled (Class A default)
-5. Click **Create Device Profile**
-
-### Application Creation
-
-**Step 1: Create Application**
-1. Navigate to: **Applications** → **Create**
-2. Fill details:
-   - **Name**: IIoT-Sensors
-   - **Description**: Week 10 LoRaWAN sensor nodes
-   - **Service Profile**: default
-3. Click **Create Application**
-
-### Device Registration
-
-**Step 2: Add Node 1 (BME688)**
-1. Open application: **IIoT-Sensors**
-2. Navigate to: **Devices** → **Create**
-3. Fill details:
-   - **Device Name**: WL55-BME688
-   - **Device Description**: Node 1 - Environmental sensor
-   - **Device EUI**: (from firmware - check defmt logs or hardcoded value)
-   - **Device Profile**: STM32WL55-ClassA-OTAA
-4. Click **Create Device**
-5. Navigate to: **Keys (OTAA)** tab
-6. Set Application Key:
-   - **Application Key**: (generate random 128-bit key or use default)
-   - Copy this key to firmware configuration
-7. Click **Set Device Keys**
-
-**Step 3: Add Node 2 (SHT41)**
-Repeat Step 2 with:
-- **Device Name**: WL55-SHT41
-- **Device Description**: Node 2 - Precision temperature sensor
-- **Device EUI**: (different from Node 1)
-
-### Update Firmware with Keys
-
-Edit firmware source files with DevEUI, AppEUI, AppKey from ChirpStack:
-
-**Node 1 (lora-1/src/main.rs)**:
-```rust
-const DEV_EUI: [u8; 8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x01];
-const APP_EUI: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-const APP_KEY: [u8; 16] = [/* from ChirpStack */];
+```
+INFO  LoRa-2 Environmental Monitor
+INFO  I2C initialized on PA12 (SCL) / PA11 (SDA)
+INFO  Starting OTAA join...
+INFO  Join successful!
+INFO  Temp: 28C  Hum: 60%  Press: 1020 hPa  Gas: 134 kOhm
+INFO  Tx #1 complete, RSSI: -15, SNR: 14.0
 ```
 
-**Node 2 (lora-2/src/main.rs)**:
-```rust
-const DEV_EUI: [u8; 8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x02];
-const APP_EUI: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-const APP_KEY: [u8; 16] = [/* from ChirpStack */];
-```
-
-Rebuild and reflash both boards.
-
----
-
-## Gateway Service Setup
-
-### Install Dependencies
-
+To attach to logs without reflashing:
 ```bash
-sudo apt update
-sudo apt install python3-pip mosquitto-clients
-
-pip3 install asyncua pymodbus paho-mqtt influxdb-client
-```
-
-### Configure MQTT Integration in ChirpStack
-
-**Step 1: Enable MQTT Integration**
-1. In ChirpStack web UI: **Applications** → **IIoT-Sensors**
-2. Navigate to: **Integrations** → **MQTT**
-3. Enable MQTT integration
-4. Configure:
-   - **MQTT Server**: tcp://localhost:1883
-   - **Username**: (leave empty for local Mosquitto)
-   - **Password**: (leave empty)
-5. Click **Save**
-
-**Step 2: Verify MQTT Topics**
-```bash
-# Subscribe to all ChirpStack events
-mosquitto_sub -h localhost -t 'application/#' -v
-
-# Expected topics:
-# application/+/device/+/event/up       (uplink data)
-# application/+/device/+/event/join     (join events)
-# application/+/device/+/event/status   (status updates)
-```
-
-### Run Gateway Service
-
-**Start the LoRaWAN MQTT Bridge**:
-```bash
-cd gateway
-python3 lorawan_mqtt_bridge.py
-```
-
-**Expected Output**:
-```
-[INFO] Connecting to MQTT broker: localhost:1883
-[INFO] Connected to MQTT broker
-[INFO] Subscribing to ChirpStack topics...
-[INFO] Connecting to InfluxDB: http://localhost:8086
-[INFO] InfluxDB connection successful
-[INFO] Waiting for LoRaWAN messages...
-```
-
-**Test with Node Join**:
-```
-[INFO] Join event: WL55-BME688 (DevAddr: 0x260BXX)
-[INFO] Uplink from WL55-BME688: RSSI=-45 SNR=10 SF=7
-[INFO] Decoded: temp=23.4°C, humidity=45.2%, pressure=1013.2hPa
-[INFO] Written to InfluxDB: lorawan_sensors (12 bytes)
-```
-
-### Run as Systemd Service (Optional)
-
-**Create service file**:
-```bash
-sudo nano /etc/systemd/system/lorawan-bridge.service
-```
-
-```ini
-[Unit]
-Description=LoRaWAN MQTT to InfluxDB Bridge
-After=network.target docker.service
-
-[Service]
-Type=simple
-User=tony
-WorkingDirectory=/home/tony/dev/4-month-plan/wk10-lorawan/gateway
-ExecStart=/usr/bin/python3 lorawan_mqtt_bridge.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**Enable and start**:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable lorawan-bridge
-sudo systemctl start lorawan-bridge
-sudo systemctl status lorawan-bridge
+probe-rs attach --chip STM32WL55JCIx
 ```
 
 ---
 
-## Monitoring and Dashboards
+## Gateway Configuration
 
-### ChirpStack Monitoring
+### RAK7268V2 Setup Overview
 
-**Device Status**:
-1. Navigate to: **Applications** → **IIoT-Sensors** → **Devices**
-2. Check **Last Seen** timestamp for each device
-3. Click device name to view:
-   - **LoRaWAN Frames**: Raw frame log
-   - **Device Data**: Decoded payloads
-   - **Activation**: Join history
+The gateway should be configured for:
 
-**Gateway Status**:
-1. Navigate to: **Gateways** → **RAK7268V2-AU915**
-2. View:
-   - **Last Seen**: Connectivity status
-   - **Statistics**: RX/TX packets, duty cycle
-   - **Live LoRaWAN Frames**: Real-time packet view
+- **Region:** AU915
+- **Sub-band:** 2 (channels 8-15: 915.2-916.6 MHz)
+- **Network Server:** Built-in LoRa Server (not ChirpStack)
+- **MQTT Broker:** Enabled on port 1883
 
-### Grafana Dashboard Access
+### LoRaWAN Credentials
 
-**Open Grafana**:
+Credentials are pre-registered in the gateway under application "TOT".
+
+| Node | DevEUI | AppEUI |
+|------|--------|--------|
+| LoRa-1 | `23ce1bfeff091fac` | `b130a864c5295356` |
+| LoRa-2 | `24ce1bfeff091fac` | `b130a864c5295356` |
+
+See `LORAWAN_CREDENTIALS.md` for complete credential details including AppKeys.
+
+### MQTT Topics
+
+The gateway publishes to these MQTT topics:
+
+| Topic | Description |
+|-------|-------------|
+| `application/TOT/device/+/rx` | Uplink messages (sensor data) |
+| `application/TOT/device/+/join` | Join events |
+| `gateway/+/stats` | Gateway statistics |
+
+---
+
+## Data Pipeline Setup
+
+### Step 1: Start Week 7 Infrastructure (InfluxDB + Grafana)
+
+If not already running, start the base infrastructure:
+
 ```bash
-# URL: http://localhost:3000
-# Username: admin
-# Password: (set during initial setup)
+cd ~/dev/4-month-plan/wk7-mqtt-influx
+docker compose up -d
 ```
 
-**Import 4-Node Dashboard**:
-1. Navigate to: **Dashboards** → **Import**
-2. Upload: `grafana/4-node-unified-dashboard.json`
-3. Select InfluxDB data source
-4. Click **Import**
+Verify containers are running:
+```bash
+docker ps | grep wk7
+```
 
-**Dashboard Panels**:
-- **LoRaWAN Node 1 (BME688)**: Temperature, Humidity, Pressure, Gas, IAQ
-- **LoRaWAN Node 2 (SHT41)**: High-precision Temperature, Humidity
-- **Modbus Node 1**: Temperature, Humidity (from Week 9)
-- **Modbus Node 2**: Temperature, Humidity (from Week 9)
-- **Temperature Comparison**: All 4 nodes on one graph
-- **LoRaWAN Metrics**: RSSI, SNR, Spreading Factor
+Expected output:
+```
+wk7-grafana    grafana/grafana:latest   ...   0.0.0.0:3000->3000/tcp
+wk7-influxdb   influxdb:2               ...   0.0.0.0:8086->8086/tcp
+wk7-mosquitto  eclipse-mosquitto:2      ...   0.0.0.0:1883->1883/tcp
+```
+
+### Step 2: Create InfluxDB Bucket
+
+Create a bucket for LoRaWAN data:
+
+```bash
+docker exec wk7-influxdb influx bucket create \
+  --name lorawan \
+  --org my-org \
+  --token my-super-secret-auth-token
+```
+
+### Step 3: Start MQTT Bridge
+
+```bash
+cd ~/dev/4-month-plan/wk10-lorawan
+docker compose up -d
+```
+
+Verify the bridge is running:
+```bash
+docker logs wk10-mqtt-bridge
+```
+
+Expected output:
+```
+============================================================
+LoRaWAN MQTT → InfluxDB Bridge
+Gateway: 10.10.10.254:1883
+InfluxDB: wk7-influxdb:8086/lorawan
+============================================================
+Connected to MQTT broker at 10.10.10.254:1883
+Subscribed to: application/#
+Waiting for LoRaWAN uplinks...
+```
+
+### Step 4: Configure Grafana Datasource
+
+Add the LoRaWAN InfluxDB datasource:
+
+```bash
+curl -X POST http://localhost:3000/api/datasources \
+  -H "Content-Type: application/json" \
+  -u admin:admin \
+  -d '{
+    "name": "LoRaWAN InfluxDB",
+    "type": "influxdb",
+    "uid": "lorawan-influxdb",
+    "url": "http://wk7-influxdb:8086",
+    "access": "proxy",
+    "jsonData": {
+      "version": "Flux",
+      "organization": "my-org",
+      "defaultBucket": "lorawan"
+    },
+    "secureJsonData": {
+      "token": "my-super-secret-auth-token"
+    }
+  }'
+```
+
+### Step 5: Import Grafana Dashboard
+
+```bash
+curl -X POST http://localhost:3000/api/dashboards/db \
+  -H "Content-Type: application/json" \
+  -u admin:admin \
+  -d "{\"dashboard\": $(cat grafana/lorawan-dashboard.json), \"overwrite\": true}"
+```
+
+---
+
+## Docker Services
+
+### Service Overview
+
+| Container | Image | Port | Purpose |
+|-----------|-------|------|---------|
+| wk7-influxdb | influxdb:2 | 8086 | Time-series database |
+| wk7-grafana | grafana/grafana | 3000 | Visualization |
+| wk7-mosquitto | eclipse-mosquitto:2 | 1883 | Local MQTT (optional) |
+| wk10-mqtt-bridge | python:3.11-slim | - | MQTT→InfluxDB bridge |
+
+### Starting Services
+
+**Start all Week 7 infrastructure:**
+```bash
+cd ~/dev/4-month-plan/wk7-mqtt-influx
+docker compose up -d
+```
+
+**Start MQTT bridge:**
+```bash
+cd ~/dev/4-month-plan/wk10-lorawan
+docker compose up -d
+```
+
+**Start both together:**
+```bash
+cd ~/dev/4-month-plan/wk7-mqtt-influx && docker compose up -d
+cd ~/dev/4-month-plan/wk10-lorawan && docker compose up -d
+```
+
+### Stopping Services
+
+**Stop MQTT bridge only:**
+```bash
+cd ~/dev/4-month-plan/wk10-lorawan
+docker compose down
+```
+
+**Stop all services:**
+```bash
+cd ~/dev/4-month-plan/wk10-lorawan && docker compose down
+cd ~/dev/4-month-plan/wk7-mqtt-influx && docker compose down
+```
+
+### Viewing Logs
+
+**MQTT bridge logs (live):**
+```bash
+docker logs -f wk10-mqtt-bridge
+```
+
+**InfluxDB logs:**
+```bash
+docker logs wk7-influxdb
+```
+
+**Grafana logs:**
+```bash
+docker logs wk7-grafana
+```
+
+**All containers status:**
+```bash
+docker ps
+```
+
+### Restarting Services
+
+**Restart MQTT bridge (after config change):**
+```bash
+cd ~/dev/4-month-plan/wk10-lorawan
+docker compose restart
+```
+
+**Restart a specific container:**
+```bash
+docker restart wk10-mqtt-bridge
+```
+
+### Docker Network
+
+All containers communicate via the `wk7-mqtt-influx_iiot-network` bridge network:
+
+```bash
+# List networks
+docker network ls
+
+# Inspect network
+docker network inspect wk7-mqtt-influx_iiot-network
+```
+
+---
+
+## Grafana Dashboard
+
+### Accessing Grafana
+
+- **URL:** http://localhost:3000
+- **Username:** `admin`
+- **Password:** `admin`
+
+### Dashboard Location
+
+Navigate to: **Dashboards → LoRaWAN Sensor Network**
+
+Or direct link: http://localhost:3000/d/lorawan-sensors/lorawan-sensor-network
+
+### Dashboard Panels
+
+| Panel | Description |
+|-------|-------------|
+| Temperature | Time series of both nodes |
+| Humidity | Time series of both nodes |
+| Pressure | LoRa-2 only (BME680) |
+| Gas Resistance | LoRa-2 only (BME680) |
+| RSSI | Signal strength (dBm) |
+| SNR | Signal-to-noise ratio (dB) |
+| Stat Panels | Current readings for each node |
+
+### Manual Flux Queries
+
+To query data manually in Grafana or InfluxDB:
+
+**All sensor data (last hour):**
+```flux
+from(bucket: "lorawan")
+  |> range(start: -1h)
+  |> filter(fn: (r) => r._measurement == "lorawan_sensor")
+```
+
+**Temperature only:**
+```flux
+from(bucket: "lorawan")
+  |> range(start: -1h)
+  |> filter(fn: (r) => r._measurement == "lorawan_sensor")
+  |> filter(fn: (r) => r._field == "temperature")
+```
+
+**Specific node:**
+```flux
+from(bucket: "lorawan")
+  |> range(start: -1h)
+  |> filter(fn: (r) => r._measurement == "lorawan_sensor")
+  |> filter(fn: (r) => r.node == "lora1")
+```
 
 ---
 
 ## Troubleshooting
 
-### Device Won't Join
+### MQTT Bridge Issues
 
-**Symptom**: OLED shows "JOINING..." for >2 minutes
+**Problem:** Bridge can't connect to gateway MQTT
+```
+Error: Connection refused
+```
 
-**Checks**:
-1. Verify gateway receives join requests:
-   - ChirpStack: **Gateways** → **Live LoRaWAN Frames**
-   - Look for "JoinRequest" message type
-2. Verify DevEUI/AppEUI/AppKey match ChirpStack:
-   - Compare firmware values with ChirpStack device keys
-3. Check frequency plan:
-   - Gateway: AU915
-   - ChirpStack: AU915
-   - Firmware: AU915
-4. Verify gateway backhaul:
-   - Ping ChirpStack host from gateway
-   - Check packet forwarder configuration
-
-**Solutions**:
-- Reflash firmware with correct keys
-- Power cycle device and gateway
-- Move device closer to gateway (RSSI > -100 dBm)
-- Try manual join trigger (reset button)
-
-### No Uplink Data After Join
-
-**Symptom**: Device shows "JOINED" but no data in ChirpStack
-
-**Checks**:
-1. Verify duty cycle compliance:
-   - Wait at least 60 seconds between uplinks
-   - Check device logs for duty cycle errors
-2. Check frame counter:
-   - ChirpStack device page shows incrementing FCnt
-3. Verify payload encoding:
-   - ChirpStack shows raw payload (hex)
-   - Payload decoder returns valid JSON
-
-**Solutions**:
-- Wait for next scheduled uplink
-- Check defmt logs for transmission errors
-- Verify sensor is returning valid data
-- Test payload decoder with sample data
-
-### Gateway Offline
-
-**Symptom**: ChirpStack shows gateway "Never Seen"
-
-**Checks**:
-1. Verify gateway power and network:
-   - Ping gateway IP
-   - Check gateway web UI accessible
-2. Check packet forwarder configuration:
-   - Server address = ChirpStack host IP
-   - Server port = 1700 (UDP)
-3. Verify ChirpStack services running:
+**Solutions:**
+1. Verify gateway IP address is correct (default: `10.10.10.254`)
+2. Check gateway MQTT broker is enabled (port 1883)
+3. Ensure your computer can reach the gateway:
    ```bash
-   docker-compose ps
+   ping 10.10.10.254
+   nc -zv 10.10.10.254 1883
    ```
 
-**Solutions**:
-- Reconfigure packet forwarder server address
-- Restart gateway (power cycle)
-- Restart ChirpStack services:
-  ```bash
-  docker-compose restart
-  ```
+**Problem:** Bridge connects but no data
+```
+Waiting for LoRaWAN uplinks...
+(nothing appears)
+```
 
-### Poor RSSI/SNR
-
-**Symptom**: RSSI < -120 dBm, SNR < 0 dB, packet loss
-
-**Checks**:
-1. Measure distance to gateway
-2. Check for physical obstructions
-3. Verify antenna connections
-4. Check spreading factor (SF7 = shortest range)
-
-**Solutions**:
-- Move device closer to gateway
-- Use higher spreading factor (SF10-SF12)
-- Improve antenna placement (higher, line-of-sight)
-- Check for interference sources
-
-### No Data in Grafana
-
-**Symptom**: Devices joined, uplinks in ChirpStack, but Grafana empty
-
-**Checks**:
-1. Verify MQTT bridge running:
+**Solutions:**
+1. Check nodes are powered and transmitting (LED blinks)
+2. Verify nodes have joined successfully (check gateway web UI)
+3. Subscribe manually to verify MQTT:
    ```bash
-   ps aux | grep lorawan_mqtt_bridge
+   docker run --rm -it eclipse-mosquitto \
+     mosquitto_sub -h 10.10.10.254 -t "application/#" -v
    ```
-2. Check MQTT messages:
-   ```bash
-   mosquitto_sub -h localhost -t 'application/#' -v
-   ```
-3. Verify InfluxDB write:
-   ```bash
-   influx query 'from(bucket:"iiot") |> range(start: -1h) |> filter(fn: (r) => r._measurement == "lorawan_sensors")'
-   ```
-4. Check Grafana data source connection
 
-**Solutions**:
-- Restart MQTT bridge service
-- Verify InfluxDB bucket name matches
-- Check Grafana query syntax
-- Verify time range (last 6 hours)
+### InfluxDB Issues
+
+**Problem:** Data not appearing in InfluxDB
+
+**Solutions:**
+1. Check bridge logs for write errors:
+   ```bash
+   docker logs wk10-mqtt-bridge | grep -i error
+   ```
+2. Verify bucket exists:
+   ```bash
+   docker exec wk7-influxdb influx bucket list \
+     --org my-org --token my-super-secret-auth-token
+   ```
+3. Query data directly:
+   ```bash
+   docker exec wk7-influxdb influx query \
+     'from(bucket: "lorawan") |> range(start: -5m) |> limit(n: 5)' \
+     --org my-org --token my-super-secret-auth-token
+   ```
+
+### Grafana Issues
+
+**Problem:** Dashboard shows "No data"
+
+**Solutions:**
+1. Verify datasource is configured correctly:
+   - Go to Configuration → Data Sources → LoRaWAN InfluxDB
+   - Click "Test" button
+2. Check time range (default is last 1 hour)
+3. Wait for nodes to transmit (every ~30 seconds)
+
+**Problem:** Can't login to Grafana
+
+**Solutions:**
+1. Default credentials: `admin` / `admin`
+2. Reset password:
+   ```bash
+   docker exec -it wk7-grafana grafana-cli admin reset-admin-password newpassword
+   ```
+
+### Firmware Issues
+
+**Problem:** `cargo run` fails with "probe not found"
+
+**Solutions:**
+1. Check USB connection
+2. List available probes:
+   ```bash
+   probe-rs list
+   ```
+3. Check permissions (Linux):
+   ```bash
+   sudo usermod -aG plugdev $USER
+   # Logout and login again
+   ```
+
+**Problem:** Node won't join LoRaWAN network
+
+**Solutions:**
+1. Check credentials match gateway configuration
+2. Verify AU915 sub-band 2 is configured
+3. Check RSSI/SNR in gateway logs (weak signal?)
+4. Ensure node is within gateway range
+
+### Docker Network Issues
+
+**Problem:** Containers can't communicate
+
+**Solutions:**
+1. Verify network exists:
+   ```bash
+   docker network ls | grep iiot
+   ```
+2. Check containers are on same network:
+   ```bash
+   docker network inspect wk7-mqtt-influx_iiot-network
+   ```
+3. Recreate network if needed:
+   ```bash
+   cd ~/dev/4-month-plan/wk7-mqtt-influx
+   docker compose down
+   docker compose up -d
+   ```
 
 ---
 
-## Maintenance
+## Quick Reference
 
-### Regular Tasks
+### Essential Commands
 
-**Daily**:
-- Check device "Last Seen" in ChirpStack
-- Verify Grafana dashboards updating
-- Monitor gateway uptime
-
-**Weekly**:
-- Review LoRaWAN frame logs for errors
-- Check duty cycle utilization
-- Backup ChirpStack database:
-  ```bash
-  docker exec chirpstack-postgresql pg_dump -U chirpstack > backup.sql
-  ```
-
-**Monthly**:
-- Update ChirpStack Docker images:
-  ```bash
-  cd chirpstack-docker
-  docker-compose pull
-  docker-compose up -d
-  ```
-- Review InfluxDB storage usage
-- Rotate logs
-
-### Firmware Updates
-
-**Update Node Firmware**:
-1. Pull latest code from repository
-2. Update DevEUI/AppEUI/AppKey if needed
-3. Build firmware:
-   ```bash
-   cd firmware/lora-1
-   cargo build --release
-   ```
-4. Flash device:
-   ```bash
-   probe-rs run --chip STM32WL55JCIx --release
-   ```
-5. Verify device rejoins network
-6. Check first uplink in ChirpStack
-
----
-
-## Appendix
-
-### Useful Commands
-
-**ChirpStack**:
 ```bash
-# View logs
-docker-compose logs -f chirpstack
+# ─────────────────────────────────────────────────────────
+# DOCKER SERVICES
+# ─────────────────────────────────────────────────────────
 
-# Restart services
-docker-compose restart
+# Start everything
+cd ~/dev/4-month-plan/wk7-mqtt-influx && docker compose up -d
+cd ~/dev/4-month-plan/wk10-lorawan && docker compose up -d
 
-# Stop all services
-docker-compose down
-```
+# Stop everything
+cd ~/dev/4-month-plan/wk10-lorawan && docker compose down
+cd ~/dev/4-month-plan/wk7-mqtt-influx && docker compose down
 
-**MQTT**:
-```bash
-# Subscribe to uplink data
-mosquitto_sub -h localhost -t 'application/+/device/+/event/up' -v
+# View MQTT bridge logs
+docker logs -f wk10-mqtt-bridge
 
-# Test MQTT connection
-mosquitto_pub -h localhost -t 'test' -m 'hello'
-```
+# Check all containers
+docker ps
 
-**InfluxDB**:
-```bash
+# ─────────────────────────────────────────────────────────
+# FIRMWARE
+# ─────────────────────────────────────────────────────────
+
+# Flash LoRa-1
+cd firmware/lora-1 && cargo run --release
+
+# Flash LoRa-2
+cd firmware/lora-2 && cargo run --release
+
+# List probes
+probe-rs list
+
+# Attach to running firmware (view logs)
+probe-rs attach --chip STM32WL55JCIx
+
+# ─────────────────────────────────────────────────────────
+# INFLUXDB
+# ─────────────────────────────────────────────────────────
+
 # Query recent data
-influx query 'from(bucket:"iiot") |> range(start: -1h) |> limit(n:10)'
+docker exec wk7-influxdb influx query \
+  'from(bucket: "lorawan") |> range(start: -5m)' \
+  --org my-org --token my-super-secret-auth-token
 
-# Show measurements
-influx query 'import "influxdata/influxdb/schema" schema.measurements(bucket: "iiot")'
+# List buckets
+docker exec wk7-influxdb influx bucket list \
+  --org my-org --token my-super-secret-auth-token
+
+# ─────────────────────────────────────────────────────────
+# MQTT DEBUGGING
+# ─────────────────────────────────────────────────────────
+
+# Subscribe to gateway MQTT
+docker run --rm -it eclipse-mosquitto \
+  mosquitto_sub -h 10.10.10.254 -t "application/#" -v
+
+# ─────────────────────────────────────────────────────────
+# URLS
+# ─────────────────────────────────────────────────────────
+
+# Grafana:  http://localhost:3000  (admin/admin)
+# InfluxDB: http://localhost:8086  (admin/admin123456)
+# Gateway:  http://10.10.10.254    (check your gateway docs)
 ```
 
-### Contact & Support
+### File Locations
 
-**GitHub Issues**: https://github.com/mapfumo/wk10-lorawan/issues
-**Email**: [Your contact]
-**Documentation**: See README.md, NOTES.md, docs/
+| File | Purpose |
+|------|---------|
+| `firmware/lora-1/src/main.rs` | LoRa-1 firmware source |
+| `firmware/lora-2/src/main.rs` | LoRa-2 firmware source |
+| `mqtt_to_influx.py` | MQTT→InfluxDB bridge script |
+| `docker-compose.yml` | MQTT bridge container config |
+| `grafana/lorawan-dashboard.json` | Grafana dashboard definition |
+| `LORAWAN_CREDENTIALS.md` | LoRaWAN keys and EUIs |
+| `CLAUDE.md` | Development notes and constraints |
+
+### Default Credentials
+
+| Service | Username | Password |
+|---------|----------|----------|
+| Grafana | admin | admin |
+| InfluxDB | admin | admin123456 |
+| InfluxDB Token | - | my-super-secret-auth-token |
+| Gateway MQTT | (none) | (none) |
+
+### Network Addresses
+
+| Service | Address |
+|---------|---------|
+| RAK Gateway | 10.10.10.254 |
+| Gateway MQTT | 10.10.10.254:1883 |
+| InfluxDB | localhost:8086 |
+| Grafana | localhost:3000 |
 
 ---
 
-**Version**: 1.0
-**Last Updated**: 2026-01-03
+## Recreating on a New Computer
+
+### Quick Start Checklist
+
+1. [ ] Install Docker and Docker Compose
+2. [ ] Install Rust and add `thumbv7em-none-eabihf` target
+3. [ ] Install probe-rs
+4. [ ] Clone/copy project files
+5. [ ] Connect STM32WL55 boards via USB
+6. [ ] Flash firmware to both nodes
+7. [ ] Configure gateway with correct credentials
+8. [ ] Start Week 7 infrastructure (`docker compose up -d`)
+9. [ ] Create InfluxDB `lorawan` bucket
+10. [ ] Start MQTT bridge (`docker compose up -d`)
+11. [ ] Add Grafana datasource
+12. [ ] Import Grafana dashboard
+13. [ ] Verify data in Grafana
+
+### Minimum Files Needed
+
+```
+wk10-lorawan/
+├── firmware/
+│   ├── lora-1/
+│   └── lora-2/
+├── lora-phy-patched/
+├── lorawan-device-patched/
+├── grafana/
+│   └── lorawan-dashboard.json
+├── mqtt_to_influx.py
+├── docker-compose.yml
+├── LORAWAN_CREDENTIALS.md
+└── USERGUIDE.md (this file)
+
+wk7-mqtt-influx/
+├── docker-compose.yml
+└── mosquitto/config/mosquitto.conf
+```
+
+---
+
+*Last updated: 2026-01-09*
