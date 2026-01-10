@@ -131,3 +131,81 @@ Join Reqeust from mote [23ce1bfeff091fac] app [b130a864c5295356]
 LoRaWAN specification (LoRaWAN 1.0.3 §6.2.4) defines that EUIs are transmitted **LSB first** over-the-air. The `lorawan-device` crate follows this spec literally, expecting you to provide arrays in transmission order (little-endian). However, humans (and gateway UIs) display EUIs in big-endian for readability.
 
 **TL;DR:** Reverse your EUIs. Yes, all of them. No, not the AppKey. Yes, it's annoying. Welcome to embedded systems. 🎭
+
+---
+
+## Issue: Grafana Dashboard Stops Receiving Data After ~90 Seconds
+
+### Symptoms
+- Dashboard populates with data initially
+- After ~60-90 seconds, new data stops appearing
+- Restarting `wk10-mqtt-bridge` container temporarily fixes it
+- No error messages in container logs (just stops silently)
+
+### Root Cause
+**Missing MQTT keep-alive handling.** The raw socket MQTT client connects with a 60-second keep-alive interval but never sends `PINGREQ` packets. After 1.5x the keep-alive timeout (~90 seconds), the MQTT broker disconnects the client.
+
+The code didn't detect the dead connection because:
+1. `sock.recv()` returns empty data on disconnect
+2. `mqtt_read_message()` returns `(None, None)` - same as timeout
+3. Main loop just keeps calling `time.sleep(0.01)` forever, unaware the connection died
+
+### Solution
+Add MQTT PINGREQ/PINGRESP handling to `mqtt_to_influx.py`:
+
+```python
+def mqtt_ping(sock):
+    """Send MQTT PINGREQ to keep connection alive."""
+    sock.send(bytes([0xC0, 0x00]))  # PINGREQ packet
+
+def mqtt_read_message(sock):
+    # ... existing code ...
+    if packet_type == 3:  # PUBLISH
+        # ... existing code ...
+    elif packet_type == 13:  # PINGRESP
+        return "PINGRESP", None
+    return None, None
+```
+
+Update main loop with periodic pinging and dead connection detection:
+
+```python
+last_ping = time.time()
+last_activity = time.time()
+PING_INTERVAL = 30   # Send ping every 30 seconds
+TIMEOUT = 90         # Reconnect if no activity for 90s
+
+while not shutdown_flag:
+    topic, message = mqtt_read_message(sock)
+
+    if topic == "PINGRESP":
+        last_activity = time.time()
+    elif topic and message:
+        last_activity = time.time()
+        if "/rx" in topic:
+            process_message(topic, message)
+
+    # Send PING to keep connection alive
+    now = time.time()
+    if now - last_ping >= PING_INTERVAL:
+        mqtt_ping(sock)
+        last_ping = now
+
+    # Check for dead connection
+    if now - last_activity > TIMEOUT:
+        print("Connection appears dead, reconnecting...")
+        sock.close()
+        break
+```
+
+### MQTT Protocol Reference
+- **PINGREQ** (0xC0): Client sends to keep connection alive
+- **PINGRESP** (0xD0): Broker responds to confirm connection
+- **Keep-alive**: Broker disconnects if no PINGREQ received within 1.5x keep-alive interval
+- Packet type is upper 4 bits of first byte: `packet_type = first_byte >> 4`
+
+### Prevention
+When using raw socket MQTT implementations (no paho-mqtt library), always implement:
+1. Periodic PINGREQ sending (at half the keep-alive interval)
+2. PINGRESP handling
+3. Activity timeout detection with automatic reconnection

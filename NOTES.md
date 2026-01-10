@@ -153,9 +153,33 @@ Week 10 transitions from point-to-point LoRa (RYLR998 modules) to production LoR
 
 ## Technical Challenges
 
+### 2026-01-10: MQTT Bridge Silent Disconnection
+
+#### Challenge: Grafana Dashboard Stops Populating After ~90 Seconds
+
+**Problem**: The MQTT-to-InfluxDB bridge (`mqtt_to_influx.py`) would work initially, then silently stop forwarding data. Restarting the container fixed it temporarily. No error messages appeared in logs.
+
+**Attempted Solutions**:
+- Checked InfluxDB connectivity (was fine)
+- Verified MQTT subscription (worked on restart)
+- Added logging (no errors shown)
+
+**Final Solution**: Implemented MQTT keep-alive handling. The raw socket MQTT client set `keep_alive=60` but never sent `PINGREQ` packets. After 90 seconds (1.5x keep-alive), the broker disconnected the client. The code didn't detect the dead connection because `recv()` returning empty looked identical to a timeout.
+
+Fix involved:
+1. Adding `mqtt_ping()` function to send PINGREQ (0xC0 0x00)
+2. Handling PINGRESP (packet type 13) in message reader
+3. Sending pings every 30 seconds
+4. Tracking last activity and reconnecting after 90s of silence
+
+**Learning**: When implementing raw socket protocols, you must handle ALL protocol requirements - not just the happy path. MQTT keep-alive is mandatory, not optional. Using a proper MQTT library (paho-mqtt) would have handled this automatically, but the minimal raw socket approach for the slim Python container required manual implementation.
+
+---
+
 ### To Be Documented
 
 #### Challenge: [Title]
+
 **Problem**: [Description]
 **Attempted Solutions**: [What was tried]
 **Final Solution**: [What worked]

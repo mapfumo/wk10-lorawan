@@ -5,6 +5,8 @@
 **Network Server**: RAK Built-in LoRa Server (AU915)
 **Status**: ✅ **COMPLETE** - Both nodes operational, Grafana dashboard live
 
+![LoRaWAN Sensor Network](github_image.png)
+
 ---
 
 ## System Overview
@@ -122,6 +124,8 @@ Sensor → STM32WL55 → LoRaWAN → RAK Gateway → MQTT → Python Bridge → 
 3. **Grafana Dashboard** (wk7-grafana container)
    - URL: http://localhost:3000/d/lorawan-sensors/lorawan-sensor-network
    - 10 panels: Temperature, Humidity, Pressure, Gas, RSSI, SNR, Stats
+
+![Grafana Dashboard](dashboard.png)
 
 ---
 

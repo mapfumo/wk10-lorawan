@@ -2,6 +2,8 @@
 
 A complete guide to setting up and running a 2-node LoRaWAN sensor network using STM32WL55 microcontrollers, RAK7268V2 gateway, and a Grafana visualization dashboard.
 
+**This project is fully standalone** - everything needed to run the data pipeline is included.
+
 ---
 
 ## Table of Contents
@@ -9,14 +11,15 @@ A complete guide to setting up and running a 2-node LoRaWAN sensor network using
 1. [Project Overview](#project-overview)
 2. [System Architecture](#system-architecture)
 3. [Prerequisites](#prerequisites)
-4. [Hardware Setup](#hardware-setup)
-5. [Firmware Setup](#firmware-setup)
-6. [Gateway Configuration](#gateway-configuration)
-7. [Data Pipeline Setup](#data-pipeline-setup)
-8. [Docker Services](#docker-services)
-9. [Grafana Dashboard](#grafana-dashboard)
-10. [Troubleshooting](#troubleshooting)
-11. [Quick Reference](#quick-reference)
+4. [Quick Start](#quick-start)
+5. [Hardware Setup](#hardware-setup)
+6. [Firmware Setup](#firmware-setup)
+7. [Gateway Configuration](#gateway-configuration)
+8. [Data Pipeline Setup](#data-pipeline-setup)
+9. [Docker Services](#docker-services)
+10. [Grafana Dashboard](#grafana-dashboard)
+11. [Troubleshooting](#troubleshooting)
+12. [Quick Reference](#quick-reference)
 
 ---
 
@@ -86,11 +89,10 @@ This project creates a LoRaWAN sensor network with:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         Docker Network: iiot-network                     │
+│                       Docker Network: lorawan-network                    │
 │                                                                         │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐         │
-│  │  wk10-mqtt-     │  │  wk7-influxdb   │  │  wk7-grafana    │         │
-│  │    bridge       │  │                 │  │                 │         │
+│  │   mqtt-bridge   │  │    influxdb     │  │     grafana     │         │
 │  │                 │  │                 │  │                 │         │
 │  │ Python script   │─▶│  Time-series    │─▶│  Visualization  │         │
 │  │ decodes MQTT    │  │  database       │  │  dashboard      │         │
@@ -178,6 +180,46 @@ probe-rs --version
 | SH1106 OLED (128x64) | 1 | For LoRa-2 display |
 | RAK7268V2 Gateway | 1 | Or compatible LoRaWAN gateway |
 | USB Cables | 2 | For programming/power |
+
+---
+
+## Quick Start
+
+For those who want to get running quickly:
+
+```bash
+# 1. Clone/copy the project
+cd ~/dev/4-month-plan/wk10-lorawan
+
+# 2. Start all services (InfluxDB, Grafana, MQTT Bridge)
+./start_services.sh
+
+# 3. Flash firmware to nodes
+cd firmware/lora-1 && cargo run --release
+cd firmware/lora-2 && cargo run --release
+
+# 4. Configure Grafana datasource (first time only)
+curl -X POST http://localhost:3000/api/datasources \
+  -H "Content-Type: application/json" \
+  -u admin:admin \
+  -d '{
+    "name": "LoRaWAN InfluxDB",
+    "type": "influxdb",
+    "url": "http://influxdb:8086",
+    "access": "proxy",
+    "jsonData": {
+      "version": "Flux",
+      "organization": "my-org",
+      "defaultBucket": "lorawan"
+    },
+    "secureJsonData": {
+      "token": "my-super-secret-auth-token"
+    }
+  }'
+
+# 5. Open Grafana
+# http://localhost:3000 (admin/admin)
+```
 
 ---
 
@@ -351,48 +393,37 @@ The gateway publishes to these MQTT topics:
 
 ## Data Pipeline Setup
 
-### Step 1: Start Week 7 Infrastructure (InfluxDB + Grafana)
-
-If not already running, start the base infrastructure:
+### Step 1: Start All Services
 
 ```bash
-cd ~/dev/4-month-plan/wk7-mqtt-influx
+cd ~/dev/4-month-plan/wk10-lorawan
+./start_services.sh
+```
+
+Or manually:
+```bash
 docker compose up -d
 ```
 
 Verify containers are running:
 ```bash
-docker ps | grep wk7
+docker compose ps
 ```
 
 Expected output:
 ```
-wk7-grafana    grafana/grafana:latest   ...   0.0.0.0:3000->3000/tcp
-wk7-influxdb   influxdb:2               ...   0.0.0.0:8086->8086/tcp
-wk7-mosquitto  eclipse-mosquitto:2      ...   0.0.0.0:1883->1883/tcp
+NAME          IMAGE                    STATUS
+grafana       grafana/grafana:latest   Up
+influxdb      influxdb:2               Up
+mosquitto     eclipse-mosquitto:2      Up
+mqtt-bridge   python:3.11-slim         Up
 ```
 
-### Step 2: Create InfluxDB Bucket
+### Step 2: Verify MQTT Bridge
 
-Create a bucket for LoRaWAN data:
-
+Check bridge logs:
 ```bash
-docker exec wk7-influxdb influx bucket create \
-  --name lorawan \
-  --org my-org \
-  --token my-super-secret-auth-token
-```
-
-### Step 3: Start MQTT Bridge
-
-```bash
-cd ~/dev/4-month-plan/wk10-lorawan
-docker compose up -d
-```
-
-Verify the bridge is running:
-```bash
-docker logs wk10-mqtt-bridge
+docker compose logs mqtt-bridge
 ```
 
 Expected output:
@@ -400,16 +431,14 @@ Expected output:
 ============================================================
 LoRaWAN MQTT → InfluxDB Bridge
 Gateway: 10.10.10.254:1883
-InfluxDB: wk7-influxdb:8086/lorawan
+InfluxDB: influxdb:8086/lorawan
 ============================================================
 Connected to MQTT broker at 10.10.10.254:1883
 Subscribed to: application/#
 Waiting for LoRaWAN uplinks...
 ```
 
-### Step 4: Configure Grafana Datasource
-
-Add the LoRaWAN InfluxDB datasource:
+### Step 3: Configure Grafana Datasource (First Time Only)
 
 ```bash
 curl -X POST http://localhost:3000/api/datasources \
@@ -418,8 +447,7 @@ curl -X POST http://localhost:3000/api/datasources \
   -d '{
     "name": "LoRaWAN InfluxDB",
     "type": "influxdb",
-    "uid": "lorawan-influxdb",
-    "url": "http://wk7-influxdb:8086",
+    "url": "http://influxdb:8086",
     "access": "proxy",
     "jsonData": {
       "version": "Flux",
@@ -432,7 +460,7 @@ curl -X POST http://localhost:3000/api/datasources \
   }'
 ```
 
-### Step 5: Import Grafana Dashboard
+### Step 4: Import Grafana Dashboard (Optional)
 
 ```bash
 curl -X POST http://localhost:3000/api/dashboards/db \
@@ -449,90 +477,52 @@ curl -X POST http://localhost:3000/api/dashboards/db \
 
 | Container | Image | Port | Purpose |
 |-----------|-------|------|---------|
-| wk7-influxdb | influxdb:2 | 8086 | Time-series database |
-| wk7-grafana | grafana/grafana | 3000 | Visualization |
-| wk7-mosquitto | eclipse-mosquitto:2 | 1883 | Local MQTT (optional) |
-| wk10-mqtt-bridge | python:3.11-slim | - | MQTT→InfluxDB bridge |
+| influxdb | influxdb:2 | 8086 | Time-series database |
+| grafana | grafana/grafana | 3000 | Visualization |
+| mosquitto | eclipse-mosquitto:2 | 1883 | Local MQTT broker (optional) |
+| mqtt-bridge | python:3.11-slim | - | Gateway MQTT → InfluxDB |
 
 ### Starting Services
 
-**Start all Week 7 infrastructure:**
 ```bash
-cd ~/dev/4-month-plan/wk7-mqtt-influx
-docker compose up -d
-```
+# Using helper script
+./start_services.sh
 
-**Start MQTT bridge:**
-```bash
-cd ~/dev/4-month-plan/wk10-lorawan
+# Or manually
 docker compose up -d
-```
-
-**Start both together:**
-```bash
-cd ~/dev/4-month-plan/wk7-mqtt-influx && docker compose up -d
-cd ~/dev/4-month-plan/wk10-lorawan && docker compose up -d
 ```
 
 ### Stopping Services
 
-**Stop MQTT bridge only:**
 ```bash
-cd ~/dev/4-month-plan/wk10-lorawan
-docker compose down
-```
+# Using helper script
+./stop_services.sh
 
-**Stop all services:**
-```bash
-cd ~/dev/4-month-plan/wk10-lorawan && docker compose down
-cd ~/dev/4-month-plan/wk7-mqtt-influx && docker compose down
+# Or manually
+docker compose down
 ```
 
 ### Viewing Logs
 
-**MQTT bridge logs (live):**
 ```bash
-docker logs -f wk10-mqtt-bridge
-```
+# MQTT bridge logs (live)
+docker compose logs -f mqtt-bridge
 
-**InfluxDB logs:**
-```bash
-docker logs wk7-influxdb
-```
+# All service logs
+docker compose logs
 
-**Grafana logs:**
-```bash
-docker logs wk7-grafana
-```
-
-**All containers status:**
-```bash
-docker ps
+# Specific service
+docker compose logs influxdb
 ```
 
 ### Restarting Services
 
-**Restart MQTT bridge (after config change):**
 ```bash
-cd ~/dev/4-month-plan/wk10-lorawan
+# Restart all
 docker compose restart
-```
 
-**Restart a specific container:**
-```bash
-docker restart wk10-mqtt-bridge
-```
-
-### Docker Network
-
-All containers communicate via the `wk7-mqtt-influx_iiot-network` bridge network:
-
-```bash
-# List networks
-docker network ls
-
-# Inspect network
-docker network inspect wk7-mqtt-influx_iiot-network
+# Restart specific service
+docker compose restart mqtt-bridge
 ```
 
 ---
@@ -543,13 +533,115 @@ docker network inspect wk7-mqtt-influx_iiot-network
 
 - **URL:** http://localhost:3000
 - **Username:** `admin`
-- **Password:** `admin`
+- **Password:** `admin` (change on first login)
 
-### Dashboard Location
+### Dashboard URL
 
-Navigate to: **Dashboards → LoRaWAN Sensor Network**
+Once set up, access the dashboard at:
+```
+http://localhost:3000/d/lorawan-sensors/lorawan-sensor-network
+```
 
-Or direct link: http://localhost:3000/d/lorawan-sensors/lorawan-sensor-network
+### First-Time Setup (Required After Fresh Install)
+
+The Grafana container starts empty. You must create the datasource and import the dashboard.
+
+**Step 1: Create the InfluxDB Datasource**
+
+The dashboard JSON expects a datasource with UID `lorawan-influxdb`. This UID must match exactly.
+
+```bash
+curl -X POST http://localhost:3000/api/datasources \
+  -H "Content-Type: application/json" \
+  -u admin:admin \
+  -d '{
+    "name": "LoRaWAN InfluxDB",
+    "type": "influxdb",
+    "uid": "lorawan-influxdb",
+    "url": "http://influxdb:8086",
+    "access": "proxy",
+    "jsonData": {
+      "version": "Flux",
+      "organization": "my-org",
+      "defaultBucket": "lorawan"
+    },
+    "secureJsonData": {
+      "token": "my-super-secret-auth-token"
+    }
+  }'
+```
+
+**Step 2: Import the Dashboard**
+
+```bash
+curl -X POST http://localhost:3000/api/dashboards/db \
+  -H "Content-Type: application/json" \
+  -u admin:admin \
+  -d "{\"dashboard\": $(cat grafana/lorawan-dashboard.json), \"overwrite\": true}"
+```
+
+Expected response:
+```json
+{"status":"success","uid":"lorawan-sensors","url":"/d/lorawan-sensors/lorawan-sensor-network"}
+```
+
+### Verifying Setup
+
+**Check if datasource exists:**
+```bash
+curl -s http://localhost:3000/api/datasources -u admin:admin | python3 -m json.tool
+```
+
+**Check if dashboard exists:**
+```bash
+curl -s "http://localhost:3000/api/search?query=lorawan" -u admin:admin
+```
+
+**Test datasource connection:**
+```bash
+curl -s http://localhost:3000/api/datasources/uid/lorawan-influxdb -u admin:admin
+```
+
+### Why the UID Matters
+
+The dashboard JSON file (`grafana/lorawan-dashboard.json`) references the datasource by UID in every panel:
+
+```json
+"datasource": {
+  "type": "influxdb",
+  "uid": "lorawan-influxdb"
+}
+```
+
+If you create a datasource with a different UID (e.g., auto-generated), all panels will show "Datasource not found". Always use `"uid": "lorawan-influxdb"` when creating the datasource.
+
+### Recovery After Container Reset
+
+If you recreate the Grafana container (e.g., `docker compose down` then `up`), you lose all dashboards and datasources. Re-run the setup commands:
+
+```bash
+# 1. Create datasource
+curl -X POST http://localhost:3000/api/datasources \
+  -H "Content-Type: application/json" \
+  -u admin:YOUR_PASSWORD \
+  -d '{
+    "name": "LoRaWAN InfluxDB",
+    "type": "influxdb",
+    "uid": "lorawan-influxdb",
+    "url": "http://influxdb:8086",
+    "access": "proxy",
+    "jsonData": {"version": "Flux", "organization": "my-org", "defaultBucket": "lorawan"},
+    "secureJsonData": {"token": "my-super-secret-auth-token"}
+  }'
+
+# 2. Import dashboard
+curl -X POST http://localhost:3000/api/dashboards/db \
+  -H "Content-Type: application/json" \
+  -u admin:YOUR_PASSWORD \
+  -d "{\"dashboard\": $(cat grafana/lorawan-dashboard.json), \"overwrite\": true}"
+```
+
+**Note:** Replace `YOUR_PASSWORD` with your Grafana password (default: `admin`).
 
 ### Dashboard Panels
 
@@ -564,8 +656,6 @@ Or direct link: http://localhost:3000/d/lorawan-sensors/lorawan-sensor-network
 | Stat Panels | Current readings for each node |
 
 ### Manual Flux Queries
-
-To query data manually in Grafana or InfluxDB:
 
 **All sensor data (last hour):**
 ```flux
@@ -632,16 +722,16 @@ Waiting for LoRaWAN uplinks...
 **Solutions:**
 1. Check bridge logs for write errors:
    ```bash
-   docker logs wk10-mqtt-bridge | grep -i error
+   docker compose logs mqtt-bridge | grep -i error
    ```
 2. Verify bucket exists:
    ```bash
-   docker exec wk7-influxdb influx bucket list \
+   docker exec influxdb influx bucket list \
      --org my-org --token my-super-secret-auth-token
    ```
 3. Query data directly:
    ```bash
-   docker exec wk7-influxdb influx query \
+   docker exec influxdb influx query \
      'from(bucket: "lorawan") |> range(start: -5m) |> limit(n: 5)' \
      --org my-org --token my-super-secret-auth-token
    ```
@@ -663,7 +753,7 @@ Waiting for LoRaWAN uplinks...
 1. Default credentials: `admin` / `admin`
 2. Reset password:
    ```bash
-   docker exec -it wk7-grafana grafana-cli admin reset-admin-password newpassword
+   docker exec -it grafana grafana-cli admin reset-admin-password newpassword
    ```
 
 ### Firmware Issues
@@ -690,26 +780,6 @@ Waiting for LoRaWAN uplinks...
 3. Check RSSI/SNR in gateway logs (weak signal?)
 4. Ensure node is within gateway range
 
-### Docker Network Issues
-
-**Problem:** Containers can't communicate
-
-**Solutions:**
-1. Verify network exists:
-   ```bash
-   docker network ls | grep iiot
-   ```
-2. Check containers are on same network:
-   ```bash
-   docker network inspect wk7-mqtt-influx_iiot-network
-   ```
-3. Recreate network if needed:
-   ```bash
-   cd ~/dev/4-month-plan/wk7-mqtt-influx
-   docker compose down
-   docker compose up -d
-   ```
-
 ---
 
 ## Quick Reference
@@ -721,19 +791,17 @@ Waiting for LoRaWAN uplinks...
 # DOCKER SERVICES
 # ─────────────────────────────────────────────────────────
 
-# Start everything
-cd ~/dev/4-month-plan/wk7-mqtt-influx && docker compose up -d
-cd ~/dev/4-month-plan/wk10-lorawan && docker compose up -d
+# Start all services
+./start_services.sh
 
-# Stop everything
-cd ~/dev/4-month-plan/wk10-lorawan && docker compose down
-cd ~/dev/4-month-plan/wk7-mqtt-influx && docker compose down
+# Stop all services
+./stop_services.sh
 
 # View MQTT bridge logs
-docker logs -f wk10-mqtt-bridge
+docker compose logs -f mqtt-bridge
 
 # Check all containers
-docker ps
+docker compose ps
 
 # ─────────────────────────────────────────────────────────
 # FIRMWARE
@@ -756,12 +824,12 @@ probe-rs attach --chip STM32WL55JCIx
 # ─────────────────────────────────────────────────────────
 
 # Query recent data
-docker exec wk7-influxdb influx query \
+docker exec influxdb influx query \
   'from(bucket: "lorawan") |> range(start: -5m)' \
   --org my-org --token my-super-secret-auth-token
 
 # List buckets
-docker exec wk7-influxdb influx bucket list \
+docker exec influxdb influx bucket list \
   --org my-org --token my-super-secret-auth-token
 
 # ─────────────────────────────────────────────────────────
@@ -788,8 +856,11 @@ docker run --rm -it eclipse-mosquitto \
 | `firmware/lora-1/src/main.rs` | LoRa-1 firmware source |
 | `firmware/lora-2/src/main.rs` | LoRa-2 firmware source |
 | `mqtt_to_influx.py` | MQTT→InfluxDB bridge script |
-| `docker-compose.yml` | MQTT bridge container config |
+| `docker-compose.yml` | All Docker services |
+| `mosquitto/config/mosquitto.conf` | Local MQTT broker config |
 | `grafana/lorawan-dashboard.json` | Grafana dashboard definition |
+| `start_services.sh` | Start all services |
+| `stop_services.sh` | Stop all services |
 | `LORAWAN_CREDENTIALS.md` | LoRaWAN keys and EUIs |
 | `CLAUDE.md` | Development notes and constraints |
 
@@ -820,16 +891,14 @@ docker run --rm -it eclipse-mosquitto \
 1. [ ] Install Docker and Docker Compose
 2. [ ] Install Rust and add `thumbv7em-none-eabihf` target
 3. [ ] Install probe-rs
-4. [ ] Clone/copy project files
-5. [ ] Connect STM32WL55 boards via USB
-6. [ ] Flash firmware to both nodes
-7. [ ] Configure gateway with correct credentials
-8. [ ] Start Week 7 infrastructure (`docker compose up -d`)
-9. [ ] Create InfluxDB `lorawan` bucket
-10. [ ] Start MQTT bridge (`docker compose up -d`)
-11. [ ] Add Grafana datasource
-12. [ ] Import Grafana dashboard
-13. [ ] Verify data in Grafana
+4. [ ] Clone/copy this project directory
+5. [ ] Run `./start_services.sh`
+6. [ ] Connect STM32WL55 boards via USB
+7. [ ] Flash firmware to both nodes
+8. [ ] Configure gateway with correct credentials
+9. [ ] Add Grafana datasource (curl command above)
+10. [ ] Import Grafana dashboard (optional)
+11. [ ] Verify data in Grafana
 
 ### Minimum Files Needed
 
@@ -840,18 +909,19 @@ wk10-lorawan/
 │   └── lora-2/
 ├── lora-phy-patched/
 ├── lorawan-device-patched/
+├── mosquitto/
+│   └── config/
+│       └── mosquitto.conf
 ├── grafana/
 │   └── lorawan-dashboard.json
 ├── mqtt_to_influx.py
 ├── docker-compose.yml
+├── start_services.sh
+├── stop_services.sh
 ├── LORAWAN_CREDENTIALS.md
 └── USERGUIDE.md (this file)
-
-wk7-mqtt-influx/
-├── docker-compose.yml
-└── mosquitto/config/mosquitto.conf
 ```
 
 ---
 
-*Last updated: 2026-01-09*
+*Last updated: 2026-01-10*
